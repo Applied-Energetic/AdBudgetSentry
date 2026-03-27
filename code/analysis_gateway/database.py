@@ -120,6 +120,28 @@ def ensure_database(db_path: Path) -> None:
                 created_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS alert_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id TEXT NOT NULL,
+                account_id TEXT,
+                account_name TEXT,
+                page_type TEXT,
+                page_url TEXT,
+                script_version TEXT,
+                alert_kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content_preview TEXT,
+                channel TEXT,
+                channel_option TEXT,
+                delivery_provider TEXT NOT NULL,
+                send_status TEXT NOT NULL,
+                provider_response TEXT,
+                severity TEXT,
+                anomaly_type TEXT,
+                triggered_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_heartbeats_instance_time
                 ON script_heartbeats(instance_id, heartbeat_at DESC);
 
@@ -134,6 +156,12 @@ def ensure_database(db_path: Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_analysis_summaries_instance_time
                 ON analysis_summaries(instance_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_alert_records_instance_time
+                ON alert_records(instance_id, triggered_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_alert_records_created_time
+                ON alert_records(created_at DESC);
             """
         )
 
@@ -473,6 +501,74 @@ def save_error_report(db_path: Path, payload: dict) -> None:
         )
 
 
+def save_alert_record(db_path: Path, payload: dict) -> int:
+    now_ms = utc_now_ms()
+    instance_id = derive_instance_id(payload)
+    with open_connection(db_path) as conn:
+        _upsert_instance_base(
+            conn,
+            instance_id=instance_id,
+            seen_at=payload["triggered_at"],
+            account_id=payload.get("account_id"),
+            account_name=payload.get("account_name"),
+            page_type=payload.get("page_type"),
+            page_url=payload.get("page_url"),
+            script_version=payload.get("script_version"),
+        )
+        cursor = conn.execute(
+            """
+            INSERT INTO alert_records (
+                instance_id, account_id, account_name, page_type, page_url, script_version,
+                alert_kind, title, content_preview, channel, channel_option, delivery_provider,
+                send_status, provider_response, severity, anomaly_type, triggered_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                instance_id,
+                payload.get("account_id"),
+                payload.get("account_name"),
+                payload.get("page_type"),
+                payload.get("page_url"),
+                payload.get("script_version"),
+                payload["alert_kind"],
+                payload["title"],
+                payload.get("content_preview"),
+                payload.get("channel"),
+                payload.get("channel_option"),
+                payload.get("delivery_provider") or "pushplus",
+                payload["send_status"],
+                payload.get("provider_response"),
+                payload.get("severity"),
+                payload.get("anomaly_type"),
+                payload["triggered_at"],
+                now_ms,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE script_instances
+            SET
+                last_seen_at = ?,
+                account_id = COALESCE(?, account_id),
+                account_name = COALESCE(?, account_name),
+                page_type = COALESCE(?, page_type),
+                page_url = COALESCE(?, page_url),
+                script_version = COALESCE(?, script_version)
+            WHERE instance_id = ?
+            """,
+            (
+                payload["triggered_at"],
+                payload.get("account_id"),
+                payload.get("account_name"),
+                payload.get("page_type"),
+                payload.get("page_url"),
+                payload.get("script_version"),
+                instance_id,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
 def fetch_history_for_instance(db_path: Path, instance_id: str, limit: int = 60) -> list[dict]:
     with open_connection(db_path) as conn:
         rows = conn.execute(
@@ -613,6 +709,39 @@ def fetch_admin_instances(db_path: Path) -> list[dict]:
     return items
 
 
+def fetch_admin_alerts(db_path: Path, limit: int = 20) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                instance_id,
+                account_id,
+                account_name,
+                page_type,
+                page_url,
+                script_version,
+                alert_kind,
+                title,
+                content_preview,
+                channel,
+                channel_option,
+                delivery_provider,
+                send_status,
+                provider_response,
+                severity,
+                anomaly_type,
+                triggered_at,
+                created_at
+            FROM alert_records
+            ORDER BY triggered_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def fetch_admin_summary(db_path: Path) -> dict:
     items = fetch_admin_instances(db_path)
     counts = {"green": 0, "yellow": 0, "red": 0}
@@ -630,6 +759,8 @@ def fetch_admin_summary(db_path: Path) -> dict:
 
     with open_connection(db_path) as conn:
         total_analyses = conn.execute("SELECT COUNT(*) FROM analysis_summaries").fetchone()[0]
+        total_alerts = conn.execute("SELECT COUNT(*) FROM alert_records").fetchone()[0]
+        latest_alert_at = conn.execute("SELECT MAX(triggered_at) FROM alert_records").fetchone()[0]
 
     return {
         "total_instances": len(items),
@@ -639,4 +770,6 @@ def fetch_admin_summary(db_path: Path) -> dict:
         "latest_capture_at": latest_capture_at,
         "latest_heartbeat_at": latest_heartbeat_at,
         "total_analyses": total_analyses,
+        "total_alerts": total_alerts,
+        "latest_alert_at": latest_alert_at,
     }

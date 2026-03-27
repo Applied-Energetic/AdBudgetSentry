@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 ProviderName = Literal["local", "deepseek"]
 HealthStatus = Literal["green", "yellow", "red"]
 CaptureStatus = Literal["success", "warning", "error"]
+AlertSendStatus = Literal["sent", "failed", "skipped"]
 
 
 class HistoryPoint(BaseModel):
@@ -92,6 +93,26 @@ class ErrorReportRequest(SignedPayload):
     script_version: str | None = None
 
 
+class AlertRecordRequest(SignedPayload):
+    instance_id: str | None = Field(default=None, min_length=1)
+    account_id: str | None = None
+    account_name: str | None = None
+    page_type: str | None = None
+    page_url: str | None = None
+    script_version: str | None = None
+    alert_kind: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1)
+    content_preview: str | None = None
+    channel: str | None = None
+    channel_option: str | None = None
+    delivery_provider: str = Field(default="pushplus", min_length=1)
+    send_status: AlertSendStatus
+    provider_response: str | None = None
+    severity: str | None = None
+    anomaly_type: str | None = None
+    triggered_at: int = Field(..., description="Unix epoch milliseconds")
+
+
 class ApiAck(BaseModel):
     ok: bool = True
     message: str = "ok"
@@ -130,3 +151,27 @@ class AdminSummary(BaseModel):
     latest_capture_at: int | None = None
     latest_heartbeat_at: int | None = None
     total_analyses: int = 0
+    total_alerts: int = 0
+    latest_alert_at: int | None = None
+
+
+class AdminAlertRecord(BaseModel):
+    id: int
+    instance_id: str
+    account_id: str | None = None
+    account_name: str | None = None
+    page_type: str | None = None
+    page_url: str | None = None
+    script_version: str | None = None
+    alert_kind: str
+    title: str
+    content_preview: str | None = None
+    channel: str | None = None
+    channel_option: str | None = None
+    delivery_provider: str
+    send_status: AlertSendStatus
+    provider_response: str | None = None
+    severity: str | None = None
+    anomaly_type: str | None = None
+    triggered_at: int
+    created_at: int

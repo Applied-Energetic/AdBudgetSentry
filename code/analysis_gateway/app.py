@@ -9,13 +9,16 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
+from admin_ui import build_admin_dashboard_html
 from anomaly import detect_spend_anomaly
 from database import (
     ensure_database,
+    fetch_admin_alerts,
     fetch_admin_instances,
     fetch_history_for_instance,
     fetch_latest_analysis_for_instance,
     fetch_admin_summary,
+    save_alert_record,
     save_error_report,
     save_heartbeat,
     save_ingest_event,
@@ -23,11 +26,13 @@ from database import (
     utc_now_ms,
 )
 from models import (
+    AdminAlertRecord,
     AdminInstanceSummary,
     AdminSummary,
     AnalysisRequest,
     AnalysisEvent,
     AnalysisResponse,
+    AlertRecordRequest,
     ApiAck,
     ErrorReportRequest,
     HistoryPoint,
@@ -117,6 +122,45 @@ def format_time(timestamp_ms: int | None) -> str:
     if not timestamp_ms:
         return "-"
     return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def compact_text(value: str | None, limit: int = 100) -> str:
+    if not value:
+        return "-"
+    raw = " ".join(str(value).split())
+    return raw if len(raw) <= limit else f"{raw[: limit - 1]}…"
+
+
+def is_missing_account_id(value: str | None) -> bool:
+    return value in {None, "", "未识别账号ID"}
+
+
+def format_account_identity(account_name: str | None, account_id: str | None) -> str:
+    name = (account_name or "").strip()
+    account_id = None if is_missing_account_id(account_id) else (account_id or "").strip()
+    if name and account_id:
+        return f"{name} · {account_id}"
+    if name:
+        return name
+    if account_id:
+        return account_id
+    return "未绑定账号"
+
+
+def build_chip(label: str, tone: str) -> str:
+    palette = {
+        "teal": ("rgba(45, 212, 191, 0.16)", "#0f766e"),
+        "green": ("rgba(134, 239, 172, 0.22)", "#166534"),
+        "yellow": ("rgba(253, 224, 71, 0.24)", "#a16207"),
+        "red": ("rgba(252, 165, 165, 0.24)", "#b91c1c"),
+        "blue": ("rgba(147, 197, 253, 0.24)", "#1d4ed8"),
+        "slate": ("rgba(203, 213, 225, 0.34)", "#334155"),
+    }
+    bg, fg = palette.get(tone, palette["slate"])
+    return (
+        f'<span class="chip" style="background:{bg};color:{fg};">'
+        f"{html.escape(label)}</span>"
+    )
 
 
 def build_analysis_request_from_ingest(payload: dict, history: list[dict]) -> AnalysisRequest | None:
@@ -532,6 +576,12 @@ def report_error(request: ErrorReportRequest) -> ApiAck:
     return ApiAck(server_time=utc_now_ms(), next_suggested_interval_sec=60)
 
 
+@app.post("/alert-record", response_model=ApiAck)
+def report_alert_record(request: AlertRecordRequest) -> ApiAck:
+    save_alert_record(get_db_path(), request.model_dump())
+    return ApiAck(server_time=utc_now_ms(), next_suggested_interval_sec=60)
+
+
 @app.get("/admin/summary", response_model=AdminSummary)
 def admin_summary() -> AdminSummary:
     return AdminSummary(**fetch_admin_summary(get_db_path()))
@@ -542,13 +592,20 @@ def admin_instances() -> list[AdminInstanceSummary]:
     return [AdminInstanceSummary(**item) for item in fetch_admin_instances(get_db_path())]
 
 
+@app.get("/admin/alerts", response_model=list[AdminAlertRecord])
+def admin_alerts(limit: int = 20) -> list[AdminAlertRecord]:
+    safe_limit = max(1, min(limit, 100))
+    return [AdminAlertRecord(**item) for item in fetch_admin_alerts(get_db_path(), limit=safe_limit)]
+
+
 @app.get("/", response_class=HTMLResponse)
 @app.get("/admin", response_class=HTMLResponse)
 def admin_home() -> HTMLResponse:
     db_path = get_db_path()
     summary = fetch_admin_summary(db_path)
     instances = fetch_admin_instances(db_path)
-    return HTMLResponse(build_admin_html(summary, instances, db_path))
+    alerts = fetch_admin_alerts(db_path, limit=20)
+    return HTMLResponse(build_admin_dashboard_html(summary, instances, alerts, db_path))
 
 
 @app.post("/analyze", response_model=AnalysisResponse)

@@ -11,6 +11,7 @@
 - 实例心跳记录
 - 采集事件记录
 - 采集错误记录
+- 告警发送回执记录
 - 实例健康状态聚合
 - 本地后台健康页
 - 大模型分析接口
@@ -62,12 +63,14 @@ $env:ADBUDGET_DB_PATH="E:\Code\AdBudgetSentry\data\app.db"
 - `POST /ingest`
 - `POST /heartbeat`
 - `POST /error`
+- `POST /alert-record`
 
 ### 后台查看
 
 - `GET /`
 - `GET /admin/summary`
 - `GET /admin/instances`
+- `GET /admin/alerts`
 
 ### 智能分析
 
