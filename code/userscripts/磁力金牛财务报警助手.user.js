@@ -41,6 +41,10 @@
 
     const state = {
         instanceId: GM_getValue("instance_id", makeInstanceId()),
+        panelPosition: {
+            left: GM_getValue("panel_left", null),
+            top: GM_getValue("panel_top", null),
+        },
         currentSpend: 0,
         increaseInWindow: 0,
         baselineSpend: 0,
@@ -76,7 +80,7 @@
                 top: 18px;
                 right: 18px;
                 z-index: 99999;
-                width: 340px;
+                width: 330px;
                 background: #fff;
                 color: #1f2937;
                 border: 1px solid #e5e7eb;
@@ -93,6 +97,8 @@
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
+                cursor: move;
+                user-select: none;
             }
             #${CONFIG.panelId} .sentry-body {
                 padding: 16px;
@@ -136,6 +142,9 @@
                 display: grid;
                 gap: 10px;
                 margin-bottom: 12px;
+            }
+            #${CONFIG.panelId} .field-stack.compact {
+                gap: 8px;
             }
             #${CONFIG.panelId} .button-row {
                 display: grid;
@@ -195,6 +204,17 @@
                 gap: 6px;
                 font-size: 12px;
                 color: #475569;
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+                padding: 10px;
+            }
+            #${CONFIG.panelId} .status-stack strong {
+                color: #0f172a;
+            }
+            #${CONFIG.panelId} .sentry-subtle {
+                color: #64748b;
+                font-size: 12px;
             }
         `);
     }
@@ -556,6 +576,58 @@
         GM_setValue("analysis_gateway_url", `${state.config.backendBaseUrl}/analyze`);
     }
 
+    function enablePanelDrag() {
+        const panel = document.getElementById(CONFIG.panelId);
+        if (!panel) return;
+        const handle = panel.querySelector(".sentry-head");
+        if (!handle) return;
+
+        let isDragging = false;
+        let offsetX = 0;
+        let offsetY = 0;
+
+        handle.addEventListener("mousedown", (event) => {
+            if (["INPUT", "BUTTON", "SELECT", "TEXTAREA", "OPTION"].includes(event.target.tagName)) {
+                return;
+            }
+            isDragging = true;
+            const rect = panel.getBoundingClientRect();
+            panel.style.right = "auto";
+            panel.style.left = `${rect.left}px`;
+            panel.style.top = `${rect.top}px`;
+            offsetX = event.clientX - rect.left;
+            offsetY = event.clientY - rect.top;
+            event.preventDefault();
+        });
+
+        document.addEventListener("mousemove", (event) => {
+            if (!isDragging) return;
+            const nextLeft = Math.max(8, Math.min(window.innerWidth - panel.offsetWidth - 8, event.clientX - offsetX));
+            const nextTop = Math.max(8, Math.min(window.innerHeight - panel.offsetHeight - 8, event.clientY - offsetY));
+            panel.style.left = `${nextLeft}px`;
+            panel.style.top = `${nextTop}px`;
+        });
+
+        document.addEventListener("mouseup", () => {
+            if (!isDragging) return;
+            isDragging = false;
+            state.panelPosition.left = panel.style.left;
+            state.panelPosition.top = panel.style.top;
+            GM_setValue("panel_left", state.panelPosition.left);
+            GM_setValue("panel_top", state.panelPosition.top);
+        });
+    }
+
+    function restorePanelPosition() {
+        const panel = document.getElementById(CONFIG.panelId);
+        if (!panel) return;
+        if (state.panelPosition.left && state.panelPosition.top) {
+            panel.style.right = "auto";
+            panel.style.left = state.panelPosition.left;
+            panel.style.top = state.panelPosition.top;
+        }
+    }
+
     function createPanel() {
         if ($(`#${CONFIG.panelId}`).length > 0) return;
 
@@ -576,7 +648,7 @@
                             <div id="metric-window" class="metric-value">-</div>
                         </div>
                     </div>
-                    <div class="field-stack">
+                    <div class="field-stack compact">
                         <div class="field-group">
                             <label for="backend-base-url">后端网关地址</label>
                             <input id="backend-base-url" type="text" value="${state.config.backendBaseUrl}" />
@@ -626,8 +698,9 @@
                         <button id="run-ai-btn">立即分析</button>
                     </div>
                     <div class="status-stack">
-                        <div>实例 ID：<span id="instance-id">${state.instanceId}</span></div>
-                        <div>后端状态：<span id="backend-status">${state.lastBackendMessage}</span></div>
+                        <div><strong>实例 ID：</strong><span id="instance-id">${state.instanceId}</span></div>
+                        <div><strong>后端状态：</strong><span id="backend-status">${state.lastBackendMessage}</span></div>
+                        <div class="sentry-subtle">面板支持拖拽，位置会自动记住。</div>
                     </div>
                     <div class="analysis-box" id="analysis-output">暂无 AI 分析结果。</div>
                     <div class="status-row">
@@ -639,6 +712,8 @@
         `;
 
         $("body").append(html);
+        restorePanelPosition();
+        enablePanelDrag();
 
         $("#save-config-btn").on("click", () => {
             saveConfigFromUI();

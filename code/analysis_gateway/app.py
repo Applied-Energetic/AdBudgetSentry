@@ -14,6 +14,7 @@ from database import (
     ensure_database,
     fetch_admin_instances,
     fetch_history_for_instance,
+    fetch_latest_analysis_for_instance,
     fetch_admin_summary,
     save_error_report,
     save_heartbeat,
@@ -44,6 +45,8 @@ CONFIG_PATH = APP_DIR / "config.json"
 EXAMPLE_CONFIG_PATH = APP_DIR / "config.example.json"
 
 DEFAULT_CONTEXT = """业务背景：快手磁力金牛在高客单价、目标成本偏高时，可能引入低质量流量，造成虚假转化、疯狂消耗、成本失控。请区分正常爆量与低质流量嫌疑，输出风险等级、证据和操作建议。"""
+MODEL_TRIGGER_TYPES = {"threshold_breach", "surge", "stalled"}
+MODEL_ANALYSIS_COOLDOWN_MS = int(os.getenv("ADBUDGET_ANALYSIS_COOLDOWN_MS", str(10 * 60 * 1000)))
 
 
 def load_config() -> dict:
@@ -164,7 +167,19 @@ async def analyze_ingest_payload(db_path: Path, payload: dict) -> None:
         threshold=request.event.threshold,
     )
 
-    if ai_enabled:
+    latest_analysis = fetch_latest_analysis_for_instance(db_path, instance_id)
+    is_cooldown_active = bool(
+        latest_analysis
+        and latest_analysis.get("created_at")
+        and utc_now_ms() - int(latest_analysis["created_at"]) < MODEL_ANALYSIS_COOLDOWN_MS
+    )
+    should_call_model = (
+        ai_enabled
+        and detection_summary.anomaly_type in MODEL_TRIGGER_TYPES
+        and not is_cooldown_active
+    )
+
+    if should_call_model:
         config = load_config()
         provider_name = request.provider_override or config.get("default_provider", "deepseek")
         try:
@@ -180,6 +195,8 @@ async def analyze_ingest_payload(db_path: Path, payload: dict) -> None:
             model_out = "fallback"
     else:
         raw_text = fallback_text(detection_summary)
+        if ai_enabled and detection_summary.anomaly_type in MODEL_TRIGGER_TYPES and is_cooldown_active:
+            raw_text = f"{raw_text}\n\n模型分析处于冷却期，本次跳过。"
         summary = raw_text
         provider_name_out = "rules"
         model_out = "fallback"
