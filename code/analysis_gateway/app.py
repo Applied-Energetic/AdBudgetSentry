@@ -1,17 +1,45 @@
 from __future__ import annotations
 
+import html
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 
 from anomaly import detect_spend_anomaly
-from models import AnalysisRequest, AnalysisResponse
+from database import (
+    ensure_database,
+    fetch_admin_instances,
+    fetch_history_for_instance,
+    fetch_admin_summary,
+    save_error_report,
+    save_heartbeat,
+    save_ingest_event,
+    save_analysis_summary,
+    utc_now_ms,
+)
+from models import (
+    AdminInstanceSummary,
+    AdminSummary,
+    AnalysisRequest,
+    AnalysisEvent,
+    AnalysisResponse,
+    ApiAck,
+    ErrorReportRequest,
+    HistoryPoint,
+    HeartbeatRequest,
+    IngestRequest,
+)
 from providers import OpenAICompatibleProvider, ProviderResult
 
 
 APP_DIR = Path(__file__).resolve().parent
+ROOT_DIR = APP_DIR.parent.parent
+DATA_DIR = ROOT_DIR / "data"
+DEFAULT_DB_PATH = DATA_DIR / "app.db"
 CONFIG_PATH = APP_DIR / "config.json"
 EXAMPLE_CONFIG_PATH = APP_DIR / "config.example.json"
 
@@ -22,6 +50,11 @@ def load_config() -> dict:
     path = CONFIG_PATH if CONFIG_PATH.exists() else EXAMPLE_CONFIG_PATH
     with path.open("r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def get_db_path() -> Path:
+    raw = os.getenv("ADBUDGET_DB_PATH")
+    return Path(raw).expanduser().resolve() if raw else DEFAULT_DB_PATH
 
 
 def build_provider(config: dict, provider_name: str) -> OpenAICompatibleProvider:
@@ -75,11 +108,359 @@ def fallback_text(detection_summary) -> str:
     )
 
 
+def format_time(timestamp_ms: int | None) -> str:
+    if not timestamp_ms:
+        return "-"
+    return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def build_analysis_request_from_ingest(payload: dict, history: list[dict]) -> AnalysisRequest | None:
+    metrics = payload.get("metrics") or {}
+    current_spend = metrics.get("current_spend")
+    if current_spend is None:
+        return None
+
+    compare_interval_min = int(metrics.get("compare_interval_min") or 30)
+    threshold = float(metrics.get("notify_threshold") or metrics.get("threshold") or 0)
+    extra_metrics = {
+        key: value
+        for key, value in metrics.items()
+        if key not in {"current_spend", "increase_amount", "compare_interval_min", "notify_threshold", "threshold"}
+    }
+    raw_context = payload.get("raw_context") or {}
+    provider_override = raw_context.get("ai_provider")
+    if provider_override not in {"local", "deepseek"}:
+        provider_override = None
+
+    return AnalysisRequest(
+        provider_override=provider_override,
+        event=AnalysisEvent(
+            current_spend=float(current_spend),
+            increase_amount=float(metrics.get("increase_amount") or 0),
+            compare_interval_min=compare_interval_min,
+            threshold=threshold,
+            baseline_time=raw_context.get("baseline_time"),
+            event_time=payload.get("captured_at"),
+            extra_metrics=extra_metrics,
+        ),
+        history=[HistoryPoint(timestamp=item["timestamp"], spend=item["spend"]) for item in history],
+        business_context=raw_context.get("business_context"),
+    )
+
+
+async def analyze_ingest_payload(db_path: Path, payload: dict) -> None:
+    instance_id = payload["instance_id"]
+    history = fetch_history_for_instance(db_path, instance_id, limit=120)
+    request = build_analysis_request_from_ingest(payload, history)
+    if request is None:
+        return
+
+    raw_context = payload.get("raw_context") or {}
+    ai_enabled = raw_context.get("ai_enabled", True)
+    detection_summary = detect_spend_anomaly(
+        history=request.history,
+        increase_amount=request.event.increase_amount,
+        compare_interval_min=request.event.compare_interval_min,
+        threshold=request.event.threshold,
+    )
+
+    if ai_enabled:
+        config = load_config()
+        provider_name = request.provider_override or config.get("default_provider", "deepseek")
+        try:
+            provider = build_provider(config, provider_name)
+            raw_text = (await run_provider(provider, build_prompt(request, detection_summary))).text
+            summary = raw_text.splitlines()[0].strip() if raw_text.strip() else fallback_text(detection_summary)
+            provider_name_out = provider.provider_name
+            model_out = provider.model
+        except Exception as exc:  # noqa: BLE001
+            raw_text = f"{fallback_text(detection_summary)}\n\n模型调用失败：{exc}"
+            summary = fallback_text(detection_summary)
+            provider_name_out = provider_name
+            model_out = "fallback"
+    else:
+        raw_text = fallback_text(detection_summary)
+        summary = raw_text
+        provider_name_out = "rules"
+        model_out = "fallback"
+
+    save_analysis_summary(
+        db_path,
+        instance_id=instance_id,
+        account_id=payload.get("account_id"),
+        account_name=payload.get("account_name"),
+        page_type=payload.get("page_type"),
+        page_url=payload.get("page_url"),
+        provider=provider_name_out,
+        model=model_out,
+        anomaly_type=detection_summary.anomaly_type,
+        severity=detection_summary.severity,
+        score=detection_summary.score,
+        summary=summary,
+        raw_text=raw_text,
+    )
+
+
+def build_admin_html(summary: dict, instances: list[dict], db_path: Path) -> str:
+    cards = [
+        ("实例总数", str(summary["total_instances"]), "#0f172a"),
+        ("Green", str(summary["green_instances"]), "#166534"),
+        ("Yellow", str(summary["yellow_instances"]), "#a16207"),
+        ("Red", str(summary["red_instances"]), "#b91c1c"),
+        ("分析记录", str(summary["total_analyses"]), "#1d4ed8"),
+    ]
+    rows = []
+    for item in instances:
+        color = {"green": "#dcfce7", "yellow": "#fef9c3", "red": "#fee2e2"}[item["health_status"]]
+        text_color = {"green": "#166534", "yellow": "#854d0e", "red": "#991b1b"}[item["health_status"]]
+        rows.append(
+            f"""
+            <tr>
+                <td><code>{html.escape(item["instance_id"])}</code></td>
+                <td>{html.escape(item.get("account_name") or "-")}</td>
+                <td>{html.escape(item.get("page_type") or "-")}</td>
+                <td><span style="padding:4px 8px;border-radius:999px;background:{color};color:{text_color};font-weight:700;">{item["health_status"]}</span></td>
+                <td>{html.escape(item.get("script_version") or "-")}</td>
+                <td>{format_time(item.get("last_heartbeat_at"))}</td>
+                <td>{format_time(item.get("last_capture_at"))}</td>
+                <td>{html.escape(item.get("last_capture_status") or "-")}</td>
+                <td>{item.get("consecutive_error_count") or 0}</td>
+                <td>{html.escape((item.get("last_error") or "-")[:80])}</td>
+                <td>{html.escape(item.get("last_anomaly_type") or "-")}</td>
+                <td>{html.escape(item.get("last_anomaly_severity") or "-")}</td>
+                <td title="{html.escape(item.get("last_analysis_summary") or "-")}">{html.escape((item.get("last_analysis_summary") or "-")[:60])}</td>
+            </tr>
+            """
+        )
+
+    card_html = "".join(
+        f"""
+        <div class="card">
+            <div class="card-label">{label}</div>
+            <div class="card-value" style="color:{color};">{value}</div>
+        </div>
+        """
+        for label, value, color in cards
+    )
+
+    rows_html = "".join(rows) or '<tr><td colspan="13">暂无实例数据</td></tr>'
+    return f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>AdBudgetSentry 控制台</title>
+        <style>
+            :root {{
+                --bg: #f8fafc;
+                --panel: #ffffff;
+                --border: #e2e8f0;
+                --ink: #0f172a;
+                --muted: #64748b;
+                --accent: #0f766e;
+            }}
+            body {{
+                margin: 0;
+                font-family: "Segoe UI", "PingFang SC", sans-serif;
+                background:
+                    radial-gradient(circle at top left, rgba(20, 184, 166, 0.10), transparent 30%),
+                    linear-gradient(180deg, #f8fafc 0%, #eef6f7 100%);
+                color: var(--ink);
+            }}
+            .wrap {{
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 32px 20px 48px;
+            }}
+            .hero {{
+                background: linear-gradient(135deg, #0f766e, #155e75);
+                border-radius: 24px;
+                color: white;
+                padding: 28px;
+                box-shadow: 0 24px 60px rgba(15, 118, 110, 0.18);
+            }}
+            .hero h1 {{
+                margin: 0 0 8px;
+                font-size: 28px;
+            }}
+            .hero p {{
+                margin: 0;
+                color: rgba(255,255,255,0.86);
+            }}
+            .meta {{
+                margin-top: 14px;
+                font-size: 13px;
+                color: rgba(255,255,255,0.75);
+            }}
+            .cards {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                gap: 14px;
+                margin: 22px 0;
+            }}
+            .card, .panel {{
+                background: var(--panel);
+                border: 1px solid var(--border);
+                border-radius: 18px;
+                padding: 18px;
+                box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+            }}
+            .card-label {{
+                color: var(--muted);
+                font-size: 13px;
+                margin-bottom: 10px;
+            }}
+            .card-value {{
+                font-size: 30px;
+                font-weight: 800;
+            }}
+            .panel-head {{
+                display: flex;
+                justify-content: space-between;
+                align-items: baseline;
+                gap: 12px;
+                margin-bottom: 12px;
+            }}
+            .panel-head h2 {{
+                margin: 0;
+                font-size: 20px;
+            }}
+            .panel-head span {{
+                color: var(--muted);
+                font-size: 13px;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 14px;
+            }}
+            th, td {{
+                text-align: left;
+                padding: 12px 10px;
+                border-bottom: 1px solid var(--border);
+                vertical-align: top;
+            }}
+            th {{
+                color: var(--muted);
+                font-weight: 600;
+                font-size: 12px;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+            }}
+            code {{
+                font-size: 12px;
+            }}
+            .subgrid {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 14px;
+                margin-top: 14px;
+            }}
+            .statline {{
+                font-size: 14px;
+                line-height: 1.7;
+            }}
+            .statline strong {{
+                color: var(--ink);
+            }}
+            @media (max-width: 900px) {{
+                .subgrid {{
+                    grid-template-columns: 1fr;
+                }}
+                table {{
+                    display: block;
+                    overflow-x: auto;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <section class="hero">
+                <h1>AdBudgetSentry 控制台</h1>
+                <p>查看油猴脚本在线状态、最近采集时间和后端接入是否健康。</p>
+                <div class="meta">
+                    数据库：{html.escape(str(db_path))} |
+                    最近心跳：{format_time(summary["latest_heartbeat_at"])} |
+                    最近采集：{format_time(summary["latest_capture_at"])}
+                </div>
+            </section>
+
+            <section class="cards">
+                {card_html}
+            </section>
+
+            <section class="subgrid">
+                <div class="panel">
+                    <div class="panel-head">
+                        <h2>状态说明</h2>
+                        <span>按实例聚合</span>
+                    </div>
+                    <div class="statline">
+                        <strong>Green</strong>：5 分钟内有心跳，10 分钟内有成功采集，且无连续错误。<br />
+                        <strong>Yellow</strong>：心跳还在，但采集变慢或最近存在间歇性错误。<br />
+                        <strong>Red</strong>：超过 10 分钟无心跳，或连续错误达到阈值。
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-head">
+                        <h2>调试接口</h2>
+                        <span>本地联调用</span>
+                    </div>
+                    <div class="statline">
+                        <strong>GET /healthz</strong><br />
+                        <strong>GET /readyz</strong><br />
+                        <strong>POST /ingest</strong><br />
+                        <strong>POST /heartbeat</strong><br />
+                        <strong>POST /error</strong><br />
+                        <strong>GET /admin/summary</strong>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel" style="margin-top: 18px;">
+                <div class="panel-head">
+                    <h2>实例健康列表</h2>
+                    <span>按最近心跳倒序</span>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Instance</th>
+                            <th>账号</th>
+                            <th>页面</th>
+                            <th>状态</th>
+                            <th>脚本版本</th>
+                            <th>最近心跳</th>
+                            <th>最近采集</th>
+                            <th>采集状态</th>
+                            <th>连续错误</th>
+                            <th>最近错误</th>
+                            <th>异常类型</th>
+                            <th>严重度</th>
+                            <th>最近分析</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows_html}</tbody>
+                </table>
+            </section>
+        </div>
+    </body>
+    </html>
+    """
+
+
 async def run_provider(provider: OpenAICompatibleProvider, prompt: str) -> ProviderResult:
     return await provider.complete(prompt)
 
 
 app = FastAPI(title="AdBudgetSentry Analysis Gateway")
+
+
+@app.on_event("startup")
+def startup() -> None:
+    ensure_database(get_db_path())
 
 
 @app.get("/health")
@@ -88,7 +469,67 @@ def health() -> dict:
     return {
         "status": "ok",
         "default_provider": config.get("default_provider", "deepseek"),
+        "db_path": str(get_db_path()),
     }
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    return {"status": "ok", "server_time": utc_now_ms()}
+
+
+@app.get("/readyz")
+def readyz() -> dict:
+    db_path = get_db_path()
+    ensure_database(db_path)
+    summary = fetch_admin_summary(db_path)
+    return {
+        "status": "ok",
+        "db_path": str(db_path),
+        "total_instances": summary["total_instances"],
+        "server_time": utc_now_ms(),
+    }
+
+
+@app.post("/ingest", response_model=ApiAck)
+async def ingest(request: IngestRequest) -> ApiAck:
+    db_path = get_db_path()
+    payload = request.model_dump()
+    instance_id = save_ingest_event(db_path, payload)
+    payload["instance_id"] = instance_id
+    await analyze_ingest_payload(db_path, payload)
+    return ApiAck(server_time=utc_now_ms(), next_suggested_interval_sec=120)
+
+
+@app.post("/heartbeat", response_model=ApiAck)
+def heartbeat(request: HeartbeatRequest) -> ApiAck:
+    save_heartbeat(get_db_path(), request.model_dump())
+    return ApiAck(server_time=utc_now_ms(), next_suggested_interval_sec=120)
+
+
+@app.post("/error", response_model=ApiAck)
+def report_error(request: ErrorReportRequest) -> ApiAck:
+    save_error_report(get_db_path(), request.model_dump())
+    return ApiAck(server_time=utc_now_ms(), next_suggested_interval_sec=60)
+
+
+@app.get("/admin/summary", response_model=AdminSummary)
+def admin_summary() -> AdminSummary:
+    return AdminSummary(**fetch_admin_summary(get_db_path()))
+
+
+@app.get("/admin/instances", response_model=list[AdminInstanceSummary])
+def admin_instances() -> list[AdminInstanceSummary]:
+    return [AdminInstanceSummary(**item) for item in fetch_admin_instances(get_db_path())]
+
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/admin", response_class=HTMLResponse)
+def admin_home() -> HTMLResponse:
+    db_path = get_db_path()
+    summary = fetch_admin_summary(db_path)
+    instances = fetch_admin_instances(db_path)
+    return HTMLResponse(build_admin_html(summary, instances, db_path))
 
 
 @app.post("/analyze", response_model=AnalysisResponse)

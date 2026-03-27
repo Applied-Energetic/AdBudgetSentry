@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 
 
 ProviderName = Literal["local", "deepseek"]
+HealthStatus = Literal["green", "yellow", "red"]
+CaptureStatus = Literal["success", "warning", "error"]
 
 
 class HistoryPoint(BaseModel):
@@ -45,3 +47,86 @@ class AnalysisResponse(BaseModel):
     detection: DetectionSummary
     summary: str
     raw_text: str
+
+
+class SignedPayload(BaseModel):
+    timestamp: int | None = Field(default=None, description="Unix epoch milliseconds")
+    nonce: str | None = None
+    signature: str | None = None
+
+
+class IngestRequest(SignedPayload):
+    instance_id: str | None = Field(default=None, min_length=1)
+    account_id: str | None = None
+    account_name: str | None = None
+    page_type: str | None = None
+    page_url: str | None = None
+    script_version: str | None = None
+    captured_at: int = Field(..., description="Unix epoch milliseconds")
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    raw_context: dict[str, Any] = Field(default_factory=dict)
+    row_count: int | None = Field(default=None, ge=0)
+
+
+class HeartbeatRequest(SignedPayload):
+    instance_id: str | None = Field(default=None, min_length=1)
+    script_version: str | None = None
+    page_url: str | None = None
+    page_type: str | None = None
+    heartbeat_at: int = Field(..., description="Unix epoch milliseconds")
+    browser_visible: bool | None = None
+    capture_status: CaptureStatus = "success"
+    last_capture_at: int | None = None
+    row_count: int | None = Field(default=None, ge=0)
+    error_message: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+
+
+class ErrorReportRequest(SignedPayload):
+    instance_id: str | None = Field(default=None, min_length=1)
+    occurred_at: int = Field(..., description="Unix epoch milliseconds")
+    error_type: str = Field(..., min_length=1)
+    error_message: str = Field(..., min_length=1)
+    page_url: str | None = None
+    script_version: str | None = None
+
+
+class ApiAck(BaseModel):
+    ok: bool = True
+    message: str = "ok"
+    server_time: int
+    next_suggested_interval_sec: int | None = None
+
+
+class AdminInstanceSummary(BaseModel):
+    instance_id: str
+    account_id: str | None = None
+    account_name: str | None = None
+    page_type: str | None = None
+    page_url: str | None = None
+    script_version: str | None = None
+    health_status: HealthStatus
+    last_seen_at: int | None = None
+    last_heartbeat_at: int | None = None
+    last_capture_at: int | None = None
+    last_capture_status: str | None = None
+    last_error: str | None = None
+    consecutive_error_count: int = 0
+    last_row_count: int | None = None
+    last_analysis_at: int | None = None
+    last_analysis_summary: str | None = None
+    last_analysis_provider: str | None = None
+    last_analysis_model: str | None = None
+    last_anomaly_type: str | None = None
+    last_anomaly_severity: str | None = None
+
+
+class AdminSummary(BaseModel):
+    total_instances: int
+    green_instances: int
+    yellow_instances: int
+    red_instances: int
+    latest_capture_at: int | None = None
+    latest_heartbeat_at: int | None = None
+    total_analyses: int = 0

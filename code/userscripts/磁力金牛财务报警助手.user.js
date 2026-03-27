@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         磁力金牛财务报警助手
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
-// @description  监控磁力金牛财务页消耗，并支持本地模型 / DeepSeek 智能分析切换
+// @version      2.1.0
+// @description  监控磁力金牛财务页消耗，并向本地后端上报采集、心跳和错误信息
 // @author       Codex
 // @match        https://niu.e.kuaishou.com/financial/record*
 // @match        https://niu.e.kuaishou.com/*
@@ -12,10 +12,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
-// @connect      127.0.0.1
-// @connect      localhost
-// @connect      pushplus.plus
-// @connect      api.deepseek.com
+// @connect      *
 // ==/UserScript==
 
 (function () {
@@ -26,11 +23,24 @@
         historyRetentionMs: 24 * 60 * 60 * 1000,
         checkDelayMs: 3000,
         uiTickMs: 1000,
-        defaultGatewayUrl: "http://127.0.0.1:8787/analyze",
+        heartbeatIntervalMs: 2 * 60 * 1000,
+        defaultBackendBaseUrl: "http://127.0.0.1:8787",
         audioAlertUrl: "https://actions.google.com/sounds/v1/alarms/alarm_clock_short.ogg",
     };
 
+    function normalizeBackendBaseUrl(raw) {
+        const fallback = CONFIG.defaultBackendBaseUrl;
+        const value = String(raw || fallback).trim();
+        if (!value) return fallback;
+        return value.replace(/\/analyze$/i, "").replace(/\/$/, "");
+    }
+
+    function makeInstanceId() {
+        return `tm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
     const state = {
+        instanceId: GM_getValue("instance_id", makeInstanceId()),
         currentSpend: 0,
         increaseInWindow: 0,
         baselineSpend: 0,
@@ -39,6 +49,10 @@
         lastReloadTime: GM_getValue("last_reload_time", Date.now()),
         lastNotifyTime: GM_getValue("last_notify_time", 0),
         lastAnalysisText: GM_getValue("last_analysis_text", ""),
+        lastBackendMessage: GM_getValue("last_backend_message", "等待上报"),
+        lastHeartbeatSentAt: GM_getValue("last_heartbeat_sent_at", 0),
+        lastCaptureStatus: GM_getValue("last_capture_status", "warning"),
+        lastErrorMessage: GM_getValue("last_error_message", ""),
         history: GM_getValue("spend_history", []),
         config: {
             pushplusToken: GM_getValue("pushplus_token", ""),
@@ -47,9 +61,13 @@
             notifyThreshold: GM_getValue("notify_threshold", 1000),
             aiEnabled: GM_getValue("ai_enabled", true),
             aiProvider: GM_getValue("ai_provider", "deepseek"),
-            analysisGatewayUrl: GM_getValue("analysis_gateway_url", CONFIG.defaultGatewayUrl),
+            backendBaseUrl: normalizeBackendBaseUrl(
+                GM_getValue("backend_base_url", GM_getValue("analysis_gateway_url", CONFIG.defaultBackendBaseUrl))
+            ),
         },
     };
+
+    GM_setValue("instance_id", state.instanceId);
 
     function addStyles() {
         GM_addStyle(`
@@ -58,7 +76,7 @@
                 top: 18px;
                 right: 18px;
                 z-index: 99999;
-                width: 330px;
+                width: 340px;
                 background: #fff;
                 color: #1f2937;
                 border: 1px solid #e5e7eb;
@@ -169,6 +187,14 @@
                 color: #475569;
                 display: flex;
                 justify-content: space-between;
+                gap: 12px;
+            }
+            #${CONFIG.panelId} .status-stack {
+                margin-top: 10px;
+                display: grid;
+                gap: 6px;
+                font-size: 12px;
+                color: #475569;
             }
         `);
     }
@@ -181,7 +207,7 @@
     }
 
     function formatMoney(value) {
-        return `${value.toFixed(2)} 元`;
+        return `${Number(value || 0).toFixed(2)} 元`;
     }
 
     function getTodayStr() {
@@ -190,6 +216,28 @@
         const month = String(now.getMonth() + 1).padStart(2, "0");
         const day = String(now.getDate()).padStart(2, "0");
         return `${year}-${month}-${day}`;
+    }
+
+    function getPageType() {
+        const path = location.pathname;
+        if (path.includes("/financial/record")) return "financial";
+        if (path.includes("/manage")) return "manage";
+        if (path.includes("/superManage")) return "super-manage";
+        return "unknown";
+    }
+
+    function getAccountName() {
+        const candidates = [
+            ".account-info-name",
+            ".account-name",
+            "[class*='Account'] [class*='name']",
+            "header [class*='name']",
+        ];
+        for (const selector of candidates) {
+            const text = $(selector).first().text().trim();
+            if (text) return text;
+        }
+        return document.title || "未识别账号";
     }
 
     function getRowsBySelectors() {
@@ -277,6 +325,28 @@
         };
     }
 
+    function getAnalyzeUrl() {
+        return `${state.config.backendBaseUrl}/analyze`;
+    }
+
+    function getIngestUrl() {
+        return `${state.config.backendBaseUrl}/ingest`;
+    }
+
+    function getHeartbeatUrl() {
+        return `${state.config.backendBaseUrl}/heartbeat`;
+    }
+
+    function getErrorUrl() {
+        return `${state.config.backendBaseUrl}/error`;
+    }
+
+    function setBackendMessage(message) {
+        state.lastBackendMessage = message;
+        GM_setValue("last_backend_message", message);
+        $("#backend-status").text(message);
+    }
+
     function gmRequest(options) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -286,6 +356,116 @@
                 ontimeout: reject,
             });
         });
+    }
+
+    function buildCommonContext() {
+        const rows = getRowsBySelectors();
+        return {
+            instance_id: state.instanceId,
+            account_id: null,
+            account_name: getAccountName(),
+            page_type: getPageType(),
+            page_url: location.href,
+            script_version: GM_info?.script?.version || "unknown",
+            row_count: rows.length,
+        };
+    }
+
+    async function sendHeartbeat(captureStatus = state.lastCaptureStatus || "warning", errorMessage = state.lastErrorMessage || "") {
+        const now = Date.now();
+        const payload = {
+            ...buildCommonContext(),
+            heartbeat_at: now,
+            browser_visible: document.visibilityState === "visible",
+            capture_status: captureStatus,
+            last_capture_at: state.lastCheckTime || null,
+            error_message: errorMessage || null,
+        };
+
+        try {
+            const response = await gmRequest({
+                method: "POST",
+                url: getHeartbeatUrl(),
+                headers: { "Content-Type": "application/json" },
+                data: JSON.stringify(payload),
+                timeout: 15000,
+            });
+            const body = JSON.parse(response.responseText || "{}");
+            state.lastHeartbeatSentAt = now;
+            GM_setValue("last_heartbeat_sent_at", now);
+            setBackendMessage(`心跳成功 ${new Date(now).toLocaleTimeString()}`);
+            return body;
+        } catch (error) {
+            setBackendMessage(`心跳失败 ${error?.error || error?.message || "unknown error"}`);
+            return null;
+        }
+    }
+
+    async function sendIngest() {
+        const payload = {
+            ...buildCommonContext(),
+            captured_at: Date.now(),
+            metrics: {
+                current_spend: state.currentSpend,
+                increase_amount: state.increaseInWindow,
+                baseline_spend: state.baselineSpend,
+                compare_interval_min: state.config.compareIntervalMin,
+                notify_threshold: state.config.notifyThreshold,
+            },
+            raw_context: {
+                history_samples: state.history.length,
+                baseline_time: state.baselineTime,
+                today: getTodayStr(),
+                ai_enabled: state.config.aiEnabled,
+                ai_provider: state.config.aiProvider,
+            },
+        };
+
+        try {
+            const response = await gmRequest({
+                method: "POST",
+                url: getIngestUrl(),
+                headers: { "Content-Type": "application/json" },
+                data: JSON.stringify(payload),
+                timeout: 15000,
+            });
+            state.lastCaptureStatus = "success";
+            state.lastErrorMessage = "";
+            GM_setValue("last_capture_status", state.lastCaptureStatus);
+            GM_setValue("last_error_message", "");
+            setBackendMessage(`采集上报成功 ${new Date().toLocaleTimeString()}`);
+            return JSON.parse(response.responseText || "{}");
+        } catch (error) {
+            const message = `采集上报失败：${error?.error || error?.message || "unknown error"}`;
+            state.lastCaptureStatus = "error";
+            state.lastErrorMessage = message;
+            GM_setValue("last_capture_status", state.lastCaptureStatus);
+            GM_setValue("last_error_message", message);
+            setBackendMessage(message);
+            await sendErrorReport("ingest_error", message);
+            return null;
+        }
+    }
+
+    async function sendErrorReport(errorType, errorMessage) {
+        try {
+            await gmRequest({
+                method: "POST",
+                url: getErrorUrl(),
+                headers: { "Content-Type": "application/json" },
+                data: JSON.stringify({
+                    instance_id: state.instanceId,
+                    occurred_at: Date.now(),
+                    error_type: errorType,
+                    error_message: errorMessage,
+                    page_url: location.href,
+                    script_version: GM_info?.script?.version || "unknown",
+                }),
+                timeout: 15000,
+            });
+        } catch (_error) {
+            // Ignore report failures to avoid recursive error loops.
+        }
     }
 
     async function requestAiAnalysis() {
@@ -300,7 +480,7 @@
         try {
             const response = await gmRequest({
                 method: "POST",
-                url: state.config.analysisGatewayUrl,
+                url: getAnalyzeUrl(),
                 headers: { "Content-Type": "application/json" },
                 data: JSON.stringify(payload),
                 timeout: 45000,
@@ -352,6 +532,8 @@
 
         $("#refresh-countdown").text(`${minutes}:${seconds}`);
         $("#last-update-time").text(new Date().toLocaleTimeString());
+        $("#instance-id").text(state.instanceId);
+        $("#backend-status").text(state.lastBackendMessage);
         renderAnalysisText(state.lastAnalysisText);
     }
 
@@ -362,7 +544,7 @@
         state.config.notifyThreshold = Number($("#notify-threshold").val()) || 1000;
         state.config.aiEnabled = $("#ai-enabled").val() === "true";
         state.config.aiProvider = $("#ai-provider").val() || "deepseek";
-        state.config.analysisGatewayUrl = $("#analysis-gateway").val().trim() || CONFIG.defaultGatewayUrl;
+        state.config.backendBaseUrl = normalizeBackendBaseUrl($("#backend-base-url").val().trim());
 
         GM_setValue("pushplus_token", state.config.pushplusToken);
         GM_setValue("refresh_interval_min", state.config.refreshIntervalMin);
@@ -370,7 +552,8 @@
         GM_setValue("notify_threshold", state.config.notifyThreshold);
         GM_setValue("ai_enabled", state.config.aiEnabled);
         GM_setValue("ai_provider", state.config.aiProvider);
-        GM_setValue("analysis_gateway_url", state.config.analysisGatewayUrl);
+        GM_setValue("backend_base_url", state.config.backendBaseUrl);
+        GM_setValue("analysis_gateway_url", `${state.config.backendBaseUrl}/analyze`);
     }
 
     function createPanel() {
@@ -394,6 +577,10 @@
                         </div>
                     </div>
                     <div class="field-stack">
+                        <div class="field-group">
+                            <label for="backend-base-url">后端网关地址</label>
+                            <input id="backend-base-url" type="text" value="${state.config.backendBaseUrl}" />
+                        </div>
                         <div class="field-group">
                             <label for="pushplus-token">PushPlus Token</label>
                             <input id="pushplus-token" type="password" value="${state.config.pushplusToken}" placeholder="输入 PushPlus Token" />
@@ -428,10 +615,6 @@
                                 </select>
                             </div>
                         </div>
-                        <div class="field-group">
-                            <label for="analysis-gateway">分析网关地址</label>
-                            <input id="analysis-gateway" type="text" value="${state.config.analysisGatewayUrl}" />
-                        </div>
                     </div>
                     <button id="save-config-btn">保存配置</button>
                     <div class="button-row">
@@ -441,6 +624,10 @@
                     <div class="button-row" style="margin-top:8px;">
                         <button id="reset-history-btn">重置历史</button>
                         <button id="run-ai-btn">立即分析</button>
+                    </div>
+                    <div class="status-stack">
+                        <div>实例 ID：<span id="instance-id">${state.instanceId}</span></div>
+                        <div>后端状态：<span id="backend-status">${state.lastBackendMessage}</span></div>
                     </div>
                     <div class="analysis-box" id="analysis-output">暂无 AI 分析结果。</div>
                     <div class="status-row">
@@ -543,29 +730,58 @@
     }
 
     async function evaluateSpend() {
-        const spend = scrapeTodaySpend();
-        if (spend < 0) return;
+        try {
+            const spend = scrapeTodaySpend();
+            if (spend < 0) {
+                state.lastCaptureStatus = "warning";
+                state.lastErrorMessage = "未找到今日消耗数据行";
+                GM_setValue("last_capture_status", state.lastCaptureStatus);
+                GM_setValue("last_error_message", state.lastErrorMessage);
+                renderStatus();
+                await sendHeartbeat("warning", state.lastErrorMessage);
+                return;
+            }
 
-        state.currentSpend = spend;
-        appendHistory(spend);
+            state.currentSpend = spend;
+            appendHistory(spend);
 
-        const baseline = getBaselineRecord();
-        state.baselineSpend = baseline.spend;
-        state.baselineTime = baseline.time;
-        state.increaseInWindow = Math.max(0, spend - baseline.spend);
-        state.lastCheckTime = Date.now();
+            const baseline = getBaselineRecord();
+            state.baselineSpend = baseline.spend;
+            state.baselineTime = baseline.time;
+            state.increaseInWindow = Math.max(0, spend - baseline.spend);
+            state.lastCheckTime = Date.now();
+            state.lastCaptureStatus = "success";
+            state.lastErrorMessage = "";
+            GM_setValue("last_capture_status", state.lastCaptureStatus);
+            GM_setValue("last_error_message", "");
 
-        renderStatus();
-        await handleThresholdAlert();
+            renderStatus();
+            await sendIngest();
+            await handleThresholdAlert();
+        } catch (error) {
+            const message = `采集失败：${error?.message || "unknown error"}`;
+            state.lastCaptureStatus = "error";
+            state.lastErrorMessage = message;
+            GM_setValue("last_capture_status", state.lastCaptureStatus);
+            GM_setValue("last_error_message", message);
+            setBackendMessage(message);
+            await sendErrorReport("capture_error", message);
+            await sendHeartbeat("error", message);
+        }
     }
 
-    function mainLoop() {
+    async function mainLoop() {
         const refreshMs = state.config.refreshIntervalMin * 60 * 1000;
         if (Date.now() - state.lastReloadTime >= refreshMs) {
             GM_setValue("last_reload_time", Date.now());
             location.reload();
             return;
         }
+
+        if (Date.now() - state.lastHeartbeatSentAt >= CONFIG.heartbeatIntervalMs) {
+            await sendHeartbeat(state.lastCaptureStatus, state.lastErrorMessage);
+        }
+
         renderStatus();
     }
 
@@ -574,9 +790,12 @@
         createPanel();
         renderStatus();
 
-        setTimeout(() => {
-            evaluateSpend();
-            setInterval(mainLoop, CONFIG.uiTickMs);
+        setTimeout(async () => {
+            await evaluateSpend();
+            await sendHeartbeat(state.lastCaptureStatus, state.lastErrorMessage);
+            setInterval(() => {
+                mainLoop().catch(() => {});
+            }, CONFIG.uiTickMs);
         }, CONFIG.checkDelayMs);
     }
 

@@ -1,16 +1,24 @@
 # Analysis Gateway
 
-本目录提供一个本地 Python 网关，用来承接 Tampermonkey 脚本的异常事件，并把智能分析请求路由到不同提供方。
+本目录现在承担两类职责：
 
-## 支持的模式
+1. 接收 Tampermonkey 采集端上报的 `ingest / heartbeat / error`
+2. 继续提供已有的 `/analyze` 智能分析能力
 
-- `local`: 调本地 OpenAI 兼容服务，如 Ollama / LM Studio
-- `deepseek`: 调 DeepSeek API
+## 当前能力
+
+- `SQLite` 本地持久化
+- 实例心跳记录
+- 采集事件记录
+- 采集错误记录
+- 实例健康状态聚合
+- 本地后台健康页
+- 大模型分析接口
 
 ## 快速开始
 
 1. 复制 `config.example.json` 为 `config.json`
-2. 填写 `deepseek.api_key`，或把 `local.base_url` 指向本地模型服务
+2. 填写 `deepseek.api_key`，或者把 `local.base_url` 指向本地模型服务
 3. 安装依赖：
 
 ```bash
@@ -23,11 +31,51 @@ pip install -r requirements.txt
 python app.py
 ```
 
-默认监听 `http://127.0.0.1:8787`。
+默认监听：
+
+```text
+http://127.0.0.1:8787
+```
+
+默认数据库路径：
+
+```text
+<repo>/data/app.db
+```
+
+也可以用环境变量覆盖：
+
+```powershell
+$env:ADBUDGET_DB_PATH="E:\Code\AdBudgetSentry\data\app.db"
+```
 
 ## 接口
 
+### 系统状态
+
 - `GET /health`
+- `GET /healthz`
+- `GET /readyz`
+
+### 采集接入
+
+- `POST /ingest`
+- `POST /heartbeat`
+- `POST /error`
+
+### 后台查看
+
+- `GET /`
+- `GET /admin/summary`
+- `GET /admin/instances`
+
+### 智能分析
+
 - `POST /analyze`
 
-Tampermonkey 脚本会把累计消耗时间序列和当前事件上下文发到这个接口，并通过 `provider_override` 字段实现切换。
+## 建议的接入顺序
+
+1. 先用油猴脚本接 `POST /heartbeat`
+2. 再接 `POST /ingest`
+3. 在后台页确认实例状态是否变化
+4. 最后再把告警和 AI 总结完全迁移到后端
