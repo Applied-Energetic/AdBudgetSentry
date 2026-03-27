@@ -6,6 +6,8 @@
 // @author       Assistant
 // @match        https://niu.e.kuaishou.com/financial/record*
 // @match        https://niu.e.kuaishou.com/*
+// @updateURL    https://raw.githubusercontent.com/Applied-Energetic/AdBudgetSentry/tree/main/code/userscripts/%E7%A3%81%E5%8A%9B%E9%87%91%E7%89%9B%E8%B4%A2%E5%8A%A1%E6%8A%A5%E8%AD%A6%E5%8A%A9%E6%89%8Bdev.user.js
+// @downloadURL  https://raw.githubusercontent.com/Applied-Energetic/AdBudgetSentry/tree/main/code/userscripts/%E7%A3%81%E5%8A%9B%E9%87%91%E7%89%9B%E8%B4%A2%E5%8A%A1%E6%8A%A5%E8%AD%A6%E5%8A%A9%E6%89%8Bdev.user.js
 // @require      https://cdn.jsdelivr.net/npm/jquery@3.5.1/dist/jquery.min.js
 // @grant        GM_addStyle
 // @grant        GM_notification
