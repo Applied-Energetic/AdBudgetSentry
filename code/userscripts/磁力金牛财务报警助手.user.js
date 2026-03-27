@@ -59,7 +59,11 @@
         lastErrorMessage: GM_getValue("last_error_message", ""),
         history: GM_getValue("spend_history", []),
         config: {
+            accountIdOverride: GM_getValue("account_id_override", ""),
+            accountNameOverride: GM_getValue("account_name_override", ""),
             pushplusToken: GM_getValue("pushplus_token", ""),
+            pushplusChannel: GM_getValue("pushplus_channel", "mail"),
+            pushplusOption: GM_getValue("pushplus_option", ""),
             refreshIntervalMin: GM_getValue("refresh_interval_min", 5),
             compareIntervalMin: GM_getValue("compare_interval_min", 30),
             notifyThreshold: GM_getValue("notify_threshold", 1000),
@@ -189,6 +193,10 @@
                 font-size: 12px;
                 line-height: 1.5;
                 white-space: pre-wrap;
+                min-height: 120px;
+                max-height: 360px;
+                overflow: auto;
+                resize: vertical;
             }
             #${CONFIG.panelId} .status-row {
                 margin-top: 10px;
@@ -246,7 +254,22 @@
         return "unknown";
     }
 
+    function getAccountId() {
+        if (state.config.accountIdOverride) return state.config.accountIdOverride;
+
+        const query = new URLSearchParams(location.search);
+        const candidateKeys = ["accountId", "account_id", "advertiserId", "advertiser_id", "cid"];
+        for (const key of candidateKeys) {
+            const value = query.get(key);
+            if (value) return value;
+        }
+
+        return "未识别账号ID";
+    }
+
     function getAccountName() {
+        if (state.config.accountNameOverride) return state.config.accountNameOverride;
+
         const candidates = [
             ".account-info-name",
             ".account-name",
@@ -345,6 +368,16 @@
         };
     }
 
+    function buildBusinessContext() {
+        return [
+            `当前账号名称：${getAccountName()}`,
+            `当前账号ID：${getAccountId()}`,
+            `脚本实例ID：${state.instanceId}`,
+            `当前页面类型：${getPageType()}`,
+            `当前页面地址：${location.href}`,
+        ].join("\n");
+    }
+
     function getAnalyzeUrl() {
         return `${state.config.backendBaseUrl}/analyze`;
     }
@@ -382,7 +415,7 @@
         const rows = getRowsBySelectors();
         return {
             instance_id: state.instanceId,
-            account_id: null,
+            account_id: getAccountId(),
             account_name: getAccountName(),
             page_type: getPageType(),
             page_url: location.href,
@@ -438,6 +471,7 @@
                 today: getTodayStr(),
                 ai_enabled: state.config.aiEnabled,
                 ai_provider: state.config.aiProvider,
+                business_context: buildBusinessContext(),
             },
         };
 
@@ -495,6 +529,7 @@
             provider_override: state.config.aiProvider,
             event: buildEventPayload(),
             history: serializeHistory(),
+            business_context: buildBusinessContext(),
         };
 
         try {
@@ -531,8 +566,8 @@
                 title,
                 content,
                 template: "html",
-                channel: "mail",
-                option: "",
+                channel: state.config.pushplusChannel || "mail",
+                option: state.config.pushplusOption || "",
             }),
         });
     }
@@ -558,7 +593,11 @@
     }
 
     function saveConfigFromUI() {
+        state.config.accountIdOverride = $("#account-id-override").val().trim();
+        state.config.accountNameOverride = $("#account-name-override").val().trim();
         state.config.pushplusToken = $("#pushplus-token").val().trim();
+        state.config.pushplusChannel = $("#pushplus-channel").val() || "mail";
+        state.config.pushplusOption = $("#pushplus-option").val().trim();
         state.config.refreshIntervalMin = Number($("#refresh-interval").val()) || 5;
         state.config.compareIntervalMin = Number($("#compare-interval").val()) || 30;
         state.config.notifyThreshold = Number($("#notify-threshold").val()) || 1000;
@@ -566,7 +605,11 @@
         state.config.aiProvider = $("#ai-provider").val() || "deepseek";
         state.config.backendBaseUrl = normalizeBackendBaseUrl($("#backend-base-url").val().trim());
 
+        GM_setValue("account_id_override", state.config.accountIdOverride);
+        GM_setValue("account_name_override", state.config.accountNameOverride);
         GM_setValue("pushplus_token", state.config.pushplusToken);
+        GM_setValue("pushplus_channel", state.config.pushplusChannel);
+        GM_setValue("pushplus_option", state.config.pushplusOption);
         GM_setValue("refresh_interval_min", state.config.refreshIntervalMin);
         GM_setValue("compare_interval_min", state.config.compareIntervalMin);
         GM_setValue("notify_threshold", state.config.notifyThreshold);
@@ -653,9 +696,33 @@
                             <label for="backend-base-url">后端网关地址</label>
                             <input id="backend-base-url" type="text" value="${state.config.backendBaseUrl}" />
                         </div>
+                        <div class="sentry-grid">
+                            <div class="field-group">
+                                <label for="account-name-override">账号名称(可选覆盖)</label>
+                                <input id="account-name-override" type="text" value="${state.config.accountNameOverride}" placeholder="未填则自动识别" />
+                            </div>
+                            <div class="field-group">
+                                <label for="account-id-override">账号ID(可选覆盖)</label>
+                                <input id="account-id-override" type="text" value="${state.config.accountIdOverride}" placeholder="未填则尝试自动识别" />
+                            </div>
+                        </div>
                         <div class="field-group">
                             <label for="pushplus-token">PushPlus Token</label>
                             <input id="pushplus-token" type="password" value="${state.config.pushplusToken}" placeholder="输入 PushPlus Token" />
+                        </div>
+                        <div class="sentry-grid">
+                            <div class="field-group">
+                                <label for="pushplus-channel">PushPlus 渠道</label>
+                                <select id="pushplus-channel">
+                                    <option value="mail" ${state.config.pushplusChannel === "mail" ? "selected" : ""}>QQ邮箱 / 邮件</option>
+                                    <option value="wechat" ${state.config.pushplusChannel === "wechat" ? "selected" : ""}>微信公众号</option>
+                                    <option value="webhook" ${state.config.pushplusChannel === "webhook" ? "selected" : ""}>Webhook</option>
+                                </select>
+                            </div>
+                            <div class="field-group">
+                                <label for="pushplus-option">渠道编码(option)</label>
+                                <input id="pushplus-option" type="text" value="${state.config.pushplusOption}" placeholder="邮件渠道可留空或填自定义邮件编码" />
+                            </div>
                         </div>
                         <div class="sentry-grid">
                             <div class="field-group">
@@ -742,11 +809,15 @@
         $("#test-alert-btn").on("click", async () => {
             saveConfigFromUI();
             const analysisText = await requestAiAnalysis();
+            const alertTitle = `【磁力金牛】【测试】${getAccountName()} (${getAccountId()})`;
             await pushAlert(
-                "【磁力金牛】测试报警",
+                alertTitle,
                 `
                 <div style="font-family:sans-serif;padding:12px;">
                     <h3>测试报警</h3>
+                    <p>账号名称：${getAccountName()}</p>
+                    <p>账号ID：${getAccountId()}</p>
+                    <p>脚本实例：${state.instanceId}</p>
                     <p>当前总消耗：${formatMoney(state.currentSpend)}</p>
                     <p>${state.config.compareIntervalMin} 分钟增量：${formatMoney(state.increaseInWindow)}</p>
                     <pre style="white-space:pre-wrap;">${analysisText || "未开启 AI 分析"}</pre>
@@ -770,15 +841,20 @@
         if (now - state.lastNotifyTime < cooldownMs) return;
 
         const analysisText = await requestAiAnalysis();
-        const title = "【磁力金牛】消耗异常预警";
+        const title = `【磁力金牛预警】${getAccountName()} (${getAccountId()})`;
         const content = `
             <div style="font-family:sans-serif;padding:14px;border:1px solid #e5e7eb;border-radius:8px;">
                 <h2 style="color:#b91c1c;">消耗异常提醒</h2>
+                <p>账号名称：<strong>${getAccountName()}</strong></p>
+                <p>账号ID：<strong>${getAccountId()}</strong></p>
+                <p>脚本实例：<strong>${state.instanceId}</strong></p>
+                <p>页面类型：<strong>${getPageType()}</strong></p>
                 <p>当前总消耗：<strong>${formatMoney(state.currentSpend)}</strong></p>
                 <p>对比窗口：<strong>${state.config.compareIntervalMin} 分钟</strong></p>
                 <p>窗口增量：<strong style="color:#b91c1c;">${formatMoney(state.increaseInWindow)}</strong></p>
                 <p>阈值：<strong>${formatMoney(state.config.notifyThreshold)}</strong></p>
                 <p>基线时间：${state.baselineTime ? new Date(state.baselineTime).toLocaleString() : "-"}</p>
+                <p>后端地址：${state.config.backendBaseUrl}</p>
                 <h3>AI 分析</h3>
                 <pre style="white-space:pre-wrap;font-size:12px;background:#f8fafc;padding:10px;border-radius:6px;">${analysisText || "未开启 AI 分析"}</pre>
             </div>

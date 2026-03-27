@@ -37,7 +37,7 @@ class OpenAICompatibleProvider(BaseChatProvider):
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是投流风控分析助手。请用中文输出简洁、明确、可执行的结论。",
+                    "content": "你是投流风控分析助手。请用中文输出简洁、明确、可执行的结论。不要使用 Markdown，不要加标题符号、加粗符号、列表符号。",
                 },
                 {"role": "user", "content": prompt},
             ],
