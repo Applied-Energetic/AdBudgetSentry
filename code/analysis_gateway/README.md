@@ -76,9 +76,15 @@ $env:ADBUDGET_DB_PATH="E:\Code\AdBudgetSentry\data\app.db"
 - `GET /admin/summary`
 - `GET /admin/instances`
 - `GET /admin/alerts`
+- `GET /admin/api/alerts`
 - `GET /admin/instances/{instance_id}`
 - `GET /admin/api/instances/{instance_id}`
 - `GET /admin/api/instances/{instance_id}/history`
+
+说明：
+
+- `GET /admin/alerts` 是后台告警中心页面，支持按账号关键字、发送状态、告警类型和日期范围筛选。
+- `GET /admin/api/alerts` 是告警历史 JSON 接口，适合后续前端异步查询或二次开发。
 
 ### 智能分析
 

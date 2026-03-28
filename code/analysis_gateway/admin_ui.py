@@ -151,7 +151,7 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
         last_error = compact_text(item.get("last_error"), limit=90)
         instance_rows.append(
             f"""
-            <tr>
+            <tr class="click-row" data-href="/admin/instances/{quote(item.get("instance_id") or "", safe="")}">
                 <td>
                         <div class="cell-title"><a class="detail-link" href="/admin/instances/{quote(item.get("instance_id") or "", safe="")}">{html.escape(account_text)}</a></div>
                         <div class="cell-sub">{html.escape(item.get("instance_id") or "-")}</div>
@@ -286,6 +286,12 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
                 border-radius: var(--radius-lg); box-shadow: var(--shadow);
             }}
             a {{ color: inherit; text-decoration: none; }}
+            .top-link {{
+                display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 14px;
+                border-radius: 999px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.16);
+                color: rgba(255,255,255,0.92); font-size: 13px; font-weight: 700;
+            }}
+            .top-link:hover {{ background: rgba(255,255,255,0.18); }}
             .detail-link {{
                 color: #0f172a;
                 border-bottom: 1px solid transparent;
@@ -294,6 +300,8 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
                 color: #0f766e;
                 border-bottom-color: rgba(15, 118, 110, 0.35);
             }}
+            .click-row {{ cursor: pointer; }}
+            .click-row:hover {{ background: rgba(240, 253, 250, 0.92); }}
             .metric-card {{ padding: 18px 18px 20px; }}
             .metric-label {{ font-size: 13px; color: var(--muted); margin-bottom: 10px; }}
             .metric-value {{ font-size: 32px; font-weight: 800; line-height: 1; }}
@@ -409,7 +417,7 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
                             <h2 class="panel-title">调试接口</h2>
                             <div class="panel-subtitle">本地联调和穿透后的外部检查都可以直接用这些接口。</div>
                         </div>
-                        {build_chip("HTTP", "blue")}
+                    <a class="top-link" href="/admin/alerts">查看告警中心</a>
                     </div>
                     <div class="stack-list">
                         <div class="api-row"><code>GET /healthz</code><span>存活检查</span></div>
@@ -429,7 +437,7 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
                         <h2 class="panel-title">最近告警记录</h2>
                         <div class="panel-subtitle">这里展示 PushPlus 发送结果和对应实例，方便确认邮件是否真的发出，以及是哪一个账号触发。</div>
                     </div>
-                    {build_chip("最近 20 条", "slate")}
+                    <a class="top-link" style="color:#0f172a;background:#fff;border-color:rgba(148,163,184,0.18);" href="/admin/alerts">查看全部历史</a>
                 </div>
                 <div class="alert-grid">{alerts_html}</div>
             </section>
@@ -742,6 +750,248 @@ def build_instance_detail_html(detail: dict, db_path: Path) -> str:
             </section>
 
             <div class="footer-note">趋势图和采样历史来自后端保存的 capture_events，不依赖浏览器当前页重新抓取。</div>
+        </main>
+        <script>
+            document.querySelectorAll('.click-row[data-href]').forEach(function (row) {{
+                row.addEventListener('click', function (event) {{
+                    if (event.target.closest('a, button, input, select, textarea, label')) {{
+                        return;
+                    }}
+                    var href = row.getAttribute('data-href');
+                    if (href) {{
+                        window.location.href = href;
+                    }}
+                }});
+            }});
+        </script>
+    </body>
+    </html>
+    """
+
+
+def build_alerts_page_html(
+    alerts: list[dict],
+    db_path: Path,
+    *,
+    account_keyword: str = "",
+    send_status: str = "",
+    alert_kind: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> str:
+    alert_cards: list[str] = []
+    for alert in alerts:
+        status = alert.get("send_status") or "unknown"
+        tone = {"sent": "green", "failed": "red", "skipped": "yellow"}.get(status, "slate")
+        account_text = format_account_identity(alert.get("account_name"), alert.get("account_id"))
+        meta_bits = [
+            f"触发时间 {format_time(alert.get('triggered_at'))}",
+            f"渠道 {alert.get('channel') or '-'}",
+            f"类型 {alert.get('alert_kind') or '-'}",
+            f"提供方 {alert.get('delivery_provider') or 'pushplus'}",
+        ]
+        if alert.get("anomaly_type"):
+            meta_bits.append(f"异常 {alert['anomaly_type']}")
+        if alert.get("severity"):
+            meta_bits.append(f"严重度 {alert['severity']}")
+        alert_cards.append(
+            f"""
+            <article class="alert-card alert-{html.escape(status)}">
+                <div class="alert-top">
+                    <div>
+                        <div class="cell-title">{html.escape(alert.get("title") or "-")}</div>
+                        <div class="cell-sub">{html.escape(account_text)}</div>
+                    </div>
+                    {build_chip(status.upper(), tone)}
+                </div>
+                <div class="alert-meta">{html.escape(" · ".join(meta_bits))}</div>
+                <div class="alert-preview">{html.escape(alert.get("content_preview") or "-")}</div>
+                <div class="alert-foot">
+                    <span>实例 {html.escape(alert.get("instance_id") or "-")}</span>
+                    <span>{html.escape(alert.get("page_type") or "-")}</span>
+                </div>
+            </article>
+            """
+        )
+    alerts_html = "".join(alert_cards) or '<div class="empty-panel">当前筛选条件下没有告警记录。</div>'
+
+    filter_count = sum(1 for value in [account_keyword, send_status, alert_kind, date_from, date_to] if value)
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>AdBudgetSentry 告警中心</title>
+        <style>
+            :root {{
+                --bg-top: #f3fbfa;
+                --bg-bottom: #eef2ff;
+                --panel: rgba(255, 255, 255, 0.88);
+                --border: rgba(148, 163, 184, 0.18);
+                --ink: #0f172a;
+                --muted: #64748b;
+                --shadow: 0 18px 44px rgba(15, 23, 42, 0.10);
+            }}
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                color: var(--ink);
+                font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+                background:
+                    radial-gradient(circle at 0% 0%, rgba(45, 212, 191, 0.18), transparent 28%),
+                    radial-gradient(circle at 100% 20%, rgba(96, 165, 250, 0.16), transparent 22%),
+                    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+            }}
+            .shell {{ max-width: 1380px; margin: 0 auto; padding: 28px 20px 44px; }}
+            .hero {{
+                border-radius: 28px; padding: 28px 30px; color: #fff;
+                background: linear-gradient(135deg, rgba(15, 118, 110, 0.96), rgba(15, 23, 42, 0.92));
+                box-shadow: 0 26px 64px rgba(15, 118, 110, 0.26);
+            }}
+            .eyebrow {{ font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255,255,255,0.74); }}
+            .hero h1 {{ margin: 10px 0 10px; font-size: clamp(30px, 4vw, 42px); line-height: 1.02; }}
+            .hero p {{ margin: 0; max-width: 860px; font-size: 15px; line-height: 1.7; color: rgba(255,255,255,0.84); }}
+            .hero-meta {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }}
+            .hero-badge, .top-link {{
+                display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 14px;
+                border-radius: 999px; font-size: 13px; font-weight: 700;
+                background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.16); color: rgba(255,255,255,0.92);
+            }}
+            .top-link {{ text-decoration: none; }}
+            .panel {{
+                margin-top: 18px; padding: 22px; border-radius: 22px; background: var(--panel);
+                border: 1px solid var(--border); box-shadow: var(--shadow); backdrop-filter: blur(20px);
+            }}
+            .panel-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-end; margin-bottom: 16px; }}
+            .panel-title {{ margin: 0; font-size: 20px; line-height: 1.2; }}
+            .panel-subtitle {{ margin-top: 6px; color: var(--muted); font-size: 13px; }}
+            .chip {{
+                display: inline-flex; align-items: center; justify-content: center; padding: 6px 10px; border-radius: 999px;
+                font-size: 12px; font-weight: 700; letter-spacing: 0.04em; white-space: nowrap;
+            }}
+            .filter-grid {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }}
+            .field {{ display: grid; gap: 8px; }}
+            .field label {{ font-size: 12px; font-weight: 700; letter-spacing: 0.04em; color: var(--muted); }}
+            .field input, .field select {{
+                width: 100%; border: 1px solid rgba(148, 163, 184, 0.26); border-radius: 14px; background: #fff;
+                padding: 12px 14px; font-size: 14px; color: var(--ink); outline: none;
+            }}
+            .field input:focus, .field select:focus {{ border-color: rgba(15, 118, 110, 0.54); box-shadow: 0 0 0 4px rgba(45, 212, 191, 0.12); }}
+            .filter-actions {{ display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }}
+            .btn {{
+                display: inline-flex; align-items: center; justify-content: center; padding: 11px 16px; border-radius: 14px;
+                border: 1px solid rgba(15, 118, 110, 0.18); background: #0f766e; color: #fff; font-size: 14px; font-weight: 700; text-decoration: none;
+            }}
+            .btn.secondary {{ background: #fff; color: var(--ink); border-color: rgba(148, 163, 184, 0.24); }}
+            .summary-row {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }}
+            .summary-pill {{
+                display: inline-flex; align-items: center; padding: 8px 12px; border-radius: 999px; background: rgba(248, 250, 252, 0.96);
+                border: 1px solid rgba(226, 232, 240, 0.9); color: var(--muted); font-size: 13px;
+            }}
+            .alert-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }}
+            .alert-card {{
+                padding: 18px; border-radius: 18px; background: #ffffff; border: 1px solid rgba(226, 232, 240, 0.88);
+                box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+            }}
+            .alert-sent {{ border-left: 6px solid rgba(22, 101, 52, 0.72); }}
+            .alert-failed {{ border-left: 6px solid rgba(185, 28, 28, 0.72); }}
+            .alert-skipped {{ border-left: 6px solid rgba(161, 98, 7, 0.72); }}
+            .alert-top {{ display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }}
+            .cell-title {{ font-size: 14px; font-weight: 700; line-height: 1.45; color: var(--ink); }}
+            .cell-sub {{ margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--muted); word-break: break-all; }}
+            .alert-meta {{ margin: 12px 0 10px; font-size: 12px; line-height: 1.6; color: var(--muted); }}
+            .alert-preview {{ font-size: 13px; line-height: 1.7; color: #1e293b; white-space: pre-wrap; min-height: 72px; }}
+            .alert-foot {{ margin-top: 14px; display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); }}
+            .empty-panel {{ padding: 34px 16px; text-align: center; color: var(--muted); border-radius: 18px; background: rgba(255,255,255,0.72); }}
+            @media (max-width: 1120px) {{ .filter-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
+            @media (max-width: 720px) {{
+                .shell {{ padding: 18px 14px 28px; }}
+                .hero {{ padding: 22px; }}
+                .filter-grid {{ grid-template-columns: 1fr; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <main class="shell">
+            <section class="hero">
+                <div class="eyebrow">Alert Center</div>
+                <h1>告警历史、筛选结果和发送回执统一查看</h1>
+                <p>这里保留完整告警历史，支持按账号、发送状态、告警类型和日期范围过滤。总览页只看最近记录，查历史和排障都在这个页面完成。</p>
+                <div class="hero-meta">
+                    <div class="hero-badge">数据库 {html.escape(str(db_path))}</div>
+                    <div class="hero-badge">当前结果 {len(alerts)} 条</div>
+                    <div class="hero-badge">已启用筛选 {filter_count} 项</div>
+                    <a class="top-link" href="/admin">返回总览</a>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h2 class="panel-title">筛选条件</h2>
+                        <div class="panel-subtitle">支持账号关键字、日期范围、发送状态和告警类型组合过滤。</div>
+                    </div>
+                    {build_chip("历史查询", "teal")}
+                </div>
+                <form method="get" action="/admin/alerts">
+                    <div class="filter-grid">
+                        <div class="field">
+                            <label for="account_keyword">账号 / 账号ID / 实例ID</label>
+                            <input id="account_keyword" name="account_keyword" value="{html.escape(account_keyword)}" placeholder="输入账号名、账号ID或实例ID" />
+                        </div>
+                        <div class="field">
+                            <label for="send_status">发送状态</label>
+                            <select id="send_status" name="send_status">
+                                <option value=""{" selected" if not send_status else ""}>全部</option>
+                                <option value="sent"{" selected" if send_status == "sent" else ""}>已发送</option>
+                                <option value="failed"{" selected" if send_status == "failed" else ""}>发送失败</option>
+                                <option value="skipped"{" selected" if send_status == "skipped" else ""}>跳过</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label for="alert_kind">告警类型</label>
+                            <select id="alert_kind" name="alert_kind">
+                                <option value=""{" selected" if not alert_kind else ""}>全部</option>
+                                <option value="threshold_exceeded"{" selected" if alert_kind == "threshold_exceeded" else ""}>阈值超限</option>
+                                <option value="analysis_summary"{" selected" if alert_kind == "analysis_summary" else ""}>分析摘要</option>
+                                <option value="test"{" selected" if alert_kind == "test" else ""}>测试告警</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label for="date_from">开始日期</label>
+                            <input id="date_from" name="date_from" type="date" value="{html.escape(date_from)}" />
+                        </div>
+                        <div class="field">
+                            <label for="date_to">结束日期</label>
+                            <input id="date_to" name="date_to" type="date" value="{html.escape(date_to)}" />
+                        </div>
+                    </div>
+                    <div class="filter-actions">
+                        <button class="btn" type="submit">查询记录</button>
+                        <a class="btn secondary" href="/admin/alerts">清空筛选</a>
+                    </div>
+                </form>
+                <div class="summary-row">
+                    <div class="summary-pill">结果条数 {len(alerts)}</div>
+                    <div class="summary-pill">账号关键字 {html.escape(account_keyword or "全部")}</div>
+                    <div class="summary-pill">发送状态 {html.escape(send_status or "全部")}</div>
+                    <div class="summary-pill">告警类型 {html.escape(alert_kind or "全部")}</div>
+                    <div class="summary-pill">日期范围 {html.escape((date_from or "-") + " ~ " + (date_to or "-"))}</div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h2 class="panel-title">告警历史</h2>
+                        <div class="panel-subtitle">默认展示最近 500 条，点击实例可回到详情页交叉查看采样、错误和分析。</div>
+                    </div>
+                    {build_chip(f"{len(alerts)} 条结果", "blue")}
+                </div>
+                <div class="alert-grid">{alerts_html}</div>
+            </section>
         </main>
     </body>
     </html>

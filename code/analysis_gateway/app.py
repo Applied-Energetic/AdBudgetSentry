@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
-from admin_ui import build_admin_dashboard_html, build_instance_detail_html
+from admin_ui import build_admin_dashboard_html, build_alerts_page_html, build_instance_detail_html
 from anomaly import detect_spend_anomaly
 from database import (
     ensure_database,
@@ -67,6 +67,24 @@ def load_config() -> dict:
 def get_db_path() -> Path:
     raw = os.getenv("ADBUDGET_DB_PATH")
     return Path(raw).expanduser().resolve() if raw else DEFAULT_DB_PATH
+
+
+def parse_date_start_ms(value: str) -> int | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return int(dt.timestamp() * 1000)
+
+
+def parse_date_end_ms(value: str) -> int | None:
+    start_ms = parse_date_start_ms(value)
+    if start_ms is None:
+        return None
+    return start_ms + (24 * 60 * 60 * 1000) - 1
 
 
 def build_provider(config: dict, provider_name: str) -> OpenAICompatibleProvider:
@@ -596,10 +614,28 @@ def admin_instances() -> list[AdminInstanceSummary]:
     return [AdminInstanceSummary(**item) for item in fetch_admin_instances(get_db_path())]
 
 
-@app.get("/admin/alerts", response_model=list[AdminAlertRecord])
-def admin_alerts(limit: int = 20) -> list[AdminAlertRecord]:
+@app.get("/admin/api/alerts", response_model=list[AdminAlertRecord])
+def admin_alerts_api(
+    limit: int = 20,
+    account_keyword: str = "",
+    send_status: str = "",
+    alert_kind: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> list[AdminAlertRecord]:
     safe_limit = max(1, min(limit, 100))
-    return [AdminAlertRecord(**item) for item in fetch_admin_alerts(get_db_path(), limit=safe_limit)]
+    return [
+        AdminAlertRecord(**item)
+        for item in fetch_admin_alerts(
+            get_db_path(),
+            limit=safe_limit,
+            account_keyword=account_keyword,
+            send_status=send_status,
+            alert_kind=alert_kind,
+            date_from_ms=parse_date_start_ms(date_from),
+            date_to_ms=parse_date_end_ms(date_to),
+        )
+    ]
 
 
 @app.get("/admin/api/instances/{instance_id}", response_model=AdminInstanceDetail)
@@ -628,6 +664,37 @@ def admin_home() -> HTMLResponse:
     instances = fetch_admin_instances(db_path)
     alerts = fetch_admin_alerts(db_path, limit=20)
     return HTMLResponse(build_admin_dashboard_html(summary, instances, alerts, db_path))
+
+
+@app.get("/admin/alerts", response_class=HTMLResponse)
+def admin_alerts_page(
+    account_keyword: str = "",
+    send_status: str = "",
+    alert_kind: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> HTMLResponse:
+    db_path = get_db_path()
+    alerts = fetch_admin_alerts(
+        db_path,
+        limit=500,
+        account_keyword=account_keyword,
+        send_status=send_status,
+        alert_kind=alert_kind,
+        date_from_ms=parse_date_start_ms(date_from),
+        date_to_ms=parse_date_end_ms(date_to),
+    )
+    return HTMLResponse(
+        build_alerts_page_html(
+            alerts,
+            db_path,
+            account_keyword=account_keyword,
+            send_status=send_status,
+            alert_kind=alert_kind,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )
 
 
 @app.get("/admin/instances/{instance_id}", response_class=HTMLResponse)

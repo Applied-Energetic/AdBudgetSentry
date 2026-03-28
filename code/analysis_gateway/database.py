@@ -805,10 +805,41 @@ def fetch_admin_instances(db_path: Path) -> list[dict]:
     return items
 
 
-def fetch_admin_alerts(db_path: Path, limit: int = 20) -> list[dict]:
+def fetch_admin_alerts(
+    db_path: Path,
+    limit: int = 20,
+    *,
+    account_keyword: str | None = None,
+    send_status: str | None = None,
+    alert_kind: str | None = None,
+    date_from_ms: int | None = None,
+    date_to_ms: int | None = None,
+) -> list[dict]:
+    clauses: list[str] = []
+    params: list[object] = []
+
+    if account_keyword:
+        clauses.append("(COALESCE(account_name, '') LIKE ? OR COALESCE(account_id, '') LIKE ?)")
+        keyword = f"%{account_keyword}%"
+        params.extend([keyword, keyword])
+    if send_status:
+        clauses.append("send_status = ?")
+        params.append(send_status)
+    if alert_kind:
+        clauses.append("alert_kind = ?")
+        params.append(alert_kind)
+    if date_from_ms is not None:
+        clauses.append("triggered_at >= ?")
+        params.append(date_from_ms)
+    if date_to_ms is not None:
+        clauses.append("triggered_at <= ?")
+        params.append(date_to_ms)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
     with open_connection(db_path) as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 id,
                 instance_id,
@@ -830,10 +861,11 @@ def fetch_admin_alerts(db_path: Path, limit: int = 20) -> list[dict]:
                 triggered_at,
                 created_at
             FROM alert_records
+            {where_sql}
             ORDER BY triggered_at DESC, id DESC
             LIMIT ?
             """,
-            (limit,),
+            (*params, limit),
         ).fetchall()
     return [dict(row) for row in rows]
 
