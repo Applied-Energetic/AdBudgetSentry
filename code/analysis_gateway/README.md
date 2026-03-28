@@ -17,6 +17,9 @@
 - 采集事件记录
 - 采集错误记录
 - 告警发送回执记录
+- 后端统一 PushPlus 告警发送
+- 实例离线巡检告警
+- 连续采集失败巡检告警
 - 实例健康状态聚合
 - 本地后台健康页
 - 大模型分析接口
@@ -25,13 +28,14 @@
 
 1. 复制 `config.example.json` 为 `config.json`
 2. 填写 `deepseek.api_key`，或者把 `local.base_url` 指向本地模型服务
-3. 安装依赖：
+3. 在 `alerts.pushplus` 中填写 `token/channel/option`
+4. 安装依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. 启动：
+5. 启动：
 
 ```bash
 python app.py
@@ -69,6 +73,7 @@ $env:ADBUDGET_DB_PATH="E:\Code\AdBudgetSentry\data\app.db"
 - `POST /heartbeat`
 - `POST /error`
 - `POST /alert-record`
+- `POST /alerts/test`
 
 ### 后台查看
 
@@ -76,6 +81,7 @@ $env:ADBUDGET_DB_PATH="E:\Code\AdBudgetSentry\data\app.db"
 - `GET /admin/summary`
 - `GET /admin/instances`
 - `GET /admin/alerts`
+- `GET /admin/alerts/export.csv`
 - `GET /admin/api/alerts`
 - `GET /admin/instances/{instance_id}`
 - `GET /admin/api/instances/{instance_id}`
@@ -85,10 +91,18 @@ $env:ADBUDGET_DB_PATH="E:\Code\AdBudgetSentry\data\app.db"
 
 - `GET /admin/alerts` 是后台告警中心页面，支持按账号关键字、发送状态、告警类型和日期范围筛选。
 - `GET /admin/api/alerts` 是告警历史 JSON 接口，适合后续前端异步查询或二次开发。
+- `GET /admin/alerts/export.csv` 可以导出当前筛选结果。
 
 ### 智能分析
 
 - `POST /analyze`
+
+## 告警策略
+
+- 阈值告警由后端在 `POST /ingest` 后统一判断和发送。
+- 实例离线告警由后端巡检器触发，默认 10 分钟无心跳发送。
+- 连续采集失败告警由后端巡检器触发，默认连续 3 次失败发送。
+- PushPlus 的 `token/channel/option` 统一在后端 `config.json` 配置，油猴脚本不再直接发送邮件。
 
 ## 建议的接入顺序
 

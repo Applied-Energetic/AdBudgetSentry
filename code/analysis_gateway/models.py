@@ -113,6 +113,22 @@ class AlertRecordRequest(SignedPayload):
     triggered_at: int = Field(..., description="Unix epoch milliseconds")
 
 
+class TestAlertRequest(SignedPayload):
+    instance_id: str | None = Field(default=None, min_length=1)
+    account_id: str | None = None
+    account_name: str | None = None
+    page_type: str | None = None
+    page_url: str | None = None
+    script_version: str | None = None
+    current_spend: float = Field(default=0, ge=0)
+    increase_amount: float = 0
+    compare_interval_min: int = Field(default=30, ge=1)
+    baseline_spend: float | None = Field(default=None, ge=0)
+    baseline_time: int | None = None
+    analysis_text: str | None = None
+    triggered_at: int = Field(..., description="Unix epoch milliseconds")
+
+
 class ApiAck(BaseModel):
     ok: bool = True
     message: str = "ok"

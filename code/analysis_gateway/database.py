@@ -379,7 +379,7 @@ def save_heartbeat(db_path: Path, payload: dict) -> None:
         ).fetchone()
         previous_errors = current["consecutive_error_count"] if current else 0
         last_capture_at = payload.get("last_capture_at") or (current["last_capture_at"] if current else None)
-        error_count = previous_errors + 1 if payload["capture_status"] == "error" else 0
+        error_count = previous_errors + 1 if payload["capture_status"] in {"warning", "error"} else 0
         health_status = compute_health_status(
             now_ms=now_ms,
             last_heartbeat_at=payload["heartbeat_at"],
@@ -819,9 +819,15 @@ def fetch_admin_alerts(
     params: list[object] = []
 
     if account_keyword:
-        clauses.append("(COALESCE(account_name, '') LIKE ? OR COALESCE(account_id, '') LIKE ?)")
+        clauses.append(
+            "("
+            "COALESCE(account_name, '') LIKE ? "
+            "OR COALESCE(account_id, '') LIKE ? "
+            "OR COALESCE(instance_id, '') LIKE ?"
+            ")"
+        )
         keyword = f"%{account_keyword}%"
-        params.extend([keyword, keyword])
+        params.extend([keyword, keyword, keyword])
     if send_status:
         clauses.append("send_status = ?")
         params.append(send_status)
@@ -902,6 +908,44 @@ def fetch_alerts_for_instance(db_path: Path, instance_id: str, limit: int = 20) 
             (instance_id, limit),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def fetch_latest_alert_for_instance_kind(
+    db_path: Path,
+    instance_id: str,
+    alert_kind: str,
+) -> dict | None:
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                id,
+                instance_id,
+                account_id,
+                account_name,
+                page_type,
+                page_url,
+                script_version,
+                alert_kind,
+                title,
+                content_preview,
+                channel,
+                channel_option,
+                delivery_provider,
+                send_status,
+                provider_response,
+                severity,
+                anomaly_type,
+                triggered_at,
+                created_at
+            FROM alert_records
+            WHERE instance_id = ? AND alert_kind = ?
+            ORDER BY triggered_at DESC, id DESC
+            LIMIT 1
+            """,
+            (instance_id, alert_kind),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def fetch_instance_detail(db_path: Path, instance_id: str) -> dict | None:

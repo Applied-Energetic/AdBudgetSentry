@@ -470,17 +470,31 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
             </section>
         </main>
         <script>
-            document.querySelectorAll('.click-row[data-href]').forEach(function (row) {{
-                row.addEventListener('click', function (event) {{
-                    if (event.target.closest('a, button, input, select, textarea, label')) {{
-                        return;
-                    }}
-                    var href = row.getAttribute('data-href');
-                    if (href) {{
-                        window.location.href = href;
-                    }}
+            (function () {{
+                var form = document.querySelector('form[action="/admin/alerts"]');
+                if (!form) return;
+                var storageKey = 'adbudget-alert-filters';
+                var hasQuery = window.location.search && window.location.search.length > 1;
+                if (!hasQuery) {{
+                    try {{
+                        var saved = JSON.parse(localStorage.getItem(storageKey) || '{{}}');
+                        ['account_keyword', 'send_status', 'alert_kind', 'date_from', 'date_to'].forEach(function (name) {{
+                            var el = form.querySelector('[name="' + name + '"]');
+                            if (el && saved[name]) {{
+                                el.value = saved[name];
+                            }}
+                        }});
+                    }} catch (_error) {{}}
+                }}
+                form.addEventListener('submit', function () {{
+                    var payload = {{}};
+                    ['account_keyword', 'send_status', 'alert_kind', 'date_from', 'date_to'].forEach(function (name) {{
+                        var el = form.querySelector('[name="' + name + '"]');
+                        payload[name] = el ? el.value : '';
+                    }});
+                    localStorage.setItem(storageKey, JSON.stringify(payload));
                 }});
-            }});
+            }})();
         </script>
     </body>
     </html>
@@ -779,6 +793,41 @@ def build_alerts_page_html(
     date_from: str = "",
     date_to: str = "",
 ) -> str:
+    account_counts: dict[str, int] = {}
+    kind_counts: dict[str, int] = {}
+    status_counts = {"sent": 0, "failed": 0, "skipped": 0}
+    for alert in alerts:
+        account_label = format_account_identity(alert.get("account_name"), alert.get("account_id"))
+        account_counts[account_label] = account_counts.get(account_label, 0) + 1
+        kind = alert.get("alert_kind") or "unknown"
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        status = alert.get("send_status") or "skipped"
+        if status in status_counts:
+            status_counts[status] += 1
+
+    top_accounts_html = "".join(
+        f'<div class="summary-pill">{html.escape(label)} {count} 条</div>'
+        for label, count in sorted(account_counts.items(), key=lambda item: item[1], reverse=True)[:6]
+    ) or '<div class="summary-pill">暂无账号统计</div>'
+    kind_stats_html = "".join(
+        f'<div class="summary-pill">{html.escape(label)} {count} 条</div>'
+        for label, count in sorted(kind_counts.items(), key=lambda item: item[1], reverse=True)[:6]
+    ) or '<div class="summary-pill">暂无类型统计</div>'
+
+    query_parts = []
+    for key, value in [
+        ("account_keyword", account_keyword),
+        ("send_status", send_status),
+        ("alert_kind", alert_kind),
+        ("date_from", date_from),
+        ("date_to", date_to),
+    ]:
+        if value:
+            query_parts.append(f"{key}={quote(str(value), safe='')}")
+    export_href = "/admin/alerts/export.csv"
+    if query_parts:
+        export_href = f"{export_href}?{'&'.join(query_parts)}"
+
     alert_cards: list[str] = []
     for alert in alerts:
         status = alert.get("send_status") or "unknown"
@@ -890,6 +939,9 @@ def build_alerts_page_html(
                 display: inline-flex; align-items: center; padding: 8px 12px; border-radius: 999px; background: rgba(248, 250, 252, 0.96);
                 border: 1px solid rgba(226, 232, 240, 0.9); color: var(--muted); font-size: 13px;
             }}
+            .stats-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
+            .stats-box {{ border-radius: 18px; padding: 16px; background: #fff; border: 1px solid rgba(226, 232, 240, 0.88); }}
+            .stats-box h3 {{ margin: 0 0 10px; font-size: 15px; }}
             .alert-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }}
             .alert-card {{
                 padding: 18px; border-radius: 18px; background: #ffffff; border: 1px solid rgba(226, 232, 240, 0.88);
@@ -910,6 +962,7 @@ def build_alerts_page_html(
                 .shell {{ padding: 18px 14px 28px; }}
                 .hero {{ padding: 22px; }}
                 .filter-grid {{ grid-template-columns: 1fr; }}
+                .stats-grid {{ grid-template-columns: 1fr; }}
             }}
         </style>
     </head>
@@ -924,6 +977,7 @@ def build_alerts_page_html(
                     <div class="hero-badge">当前结果 {len(alerts)} 条</div>
                     <div class="hero-badge">已启用筛选 {filter_count} 项</div>
                     <a class="top-link" href="/admin">返回总览</a>
+                    <a class="top-link" href="{html.escape(export_href)}">导出 CSV</a>
                 </div>
             </section>
 
@@ -954,8 +1008,9 @@ def build_alerts_page_html(
                             <label for="alert_kind">告警类型</label>
                             <select id="alert_kind" name="alert_kind">
                                 <option value=""{" selected" if not alert_kind else ""}>全部</option>
-                                <option value="threshold_exceeded"{" selected" if alert_kind == "threshold_exceeded" else ""}>阈值超限</option>
-                                <option value="analysis_summary"{" selected" if alert_kind == "analysis_summary" else ""}>分析摘要</option>
+                                <option value="threshold"{" selected" if alert_kind == "threshold" else ""}>阈值超限</option>
+                                <option value="instance_offline"{" selected" if alert_kind == "instance_offline" else ""}>实例离线</option>
+                                <option value="capture_failure"{" selected" if alert_kind == "capture_failure" else ""}>连续失败</option>
                                 <option value="test"{" selected" if alert_kind == "test" else ""}>测试告警</option>
                             </select>
                         </div>
@@ -979,6 +1034,29 @@ def build_alerts_page_html(
                     <div class="summary-pill">发送状态 {html.escape(send_status or "全部")}</div>
                     <div class="summary-pill">告警类型 {html.escape(alert_kind or "全部")}</div>
                     <div class="summary-pill">日期范围 {html.escape((date_from or "-") + " ~ " + (date_to or "-"))}</div>
+                    <div class="summary-pill">已发送 {status_counts["sent"]} 条</div>
+                    <div class="summary-pill">失败 {status_counts["failed"]} 条</div>
+                    <div class="summary-pill">跳过 {status_counts["skipped"]} 条</div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h2 class="panel-title">统计概览</h2>
+                        <div class="panel-subtitle">这里按当前筛选结果聚合账号和告警类型，方便快速判断问题集中在哪里。</div>
+                    </div>
+                    {build_chip("按当前筛选聚合", "blue")}
+                </div>
+                <div class="stats-grid">
+                    <div class="stats-box">
+                        <h3>按账号聚合</h3>
+                        <div class="summary-row">{top_accounts_html}</div>
+                    </div>
+                    <div class="stats-box">
+                        <h3>按告警类型聚合</h3>
+                        <div class="summary-row">{kind_stats_html}</div>
+                    </div>
                 </div>
             </section>
 

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import csv
 import html
+import io
 import json
 import os
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 from admin_ui import build_admin_dashboard_html, build_alerts_page_html, build_instance_detail_html
 from anomaly import detect_spend_anomaly
@@ -18,6 +22,7 @@ from database import (
     fetch_capture_history_for_instance,
     fetch_history_for_instance,
     fetch_instance_detail,
+    fetch_latest_alert_for_instance_kind,
     fetch_latest_analysis_for_instance,
     fetch_admin_summary,
     save_alert_record,
@@ -42,6 +47,7 @@ from models import (
     HistoryPoint,
     HeartbeatRequest,
     IngestRequest,
+    TestAlertRequest,
 )
 from providers import OpenAICompatibleProvider, ProviderResult
 
@@ -56,6 +62,21 @@ EXAMPLE_CONFIG_PATH = APP_DIR / "config.example.json"
 DEFAULT_CONTEXT = """业务背景：快手磁力金牛在高客单价、目标成本偏高时，可能引入低质量流量，造成虚假转化、疯狂消耗、成本失控。请区分正常爆量与低质流量嫌疑，输出风险等级、证据和操作建议。"""
 MODEL_TRIGGER_TYPES = {"threshold_breach", "surge", "stalled"}
 MODEL_ANALYSIS_COOLDOWN_MS = int(os.getenv("ADBUDGET_ANALYSIS_COOLDOWN_MS", str(10 * 60 * 1000)))
+DEFAULT_ALERTS_CONFIG = {
+    "enabled": True,
+    "threshold_cooldown_minutes": 10,
+    "offline_after_minutes": 10,
+    "offline_cooldown_minutes": 60,
+    "failure_cooldown_minutes": 30,
+    "health_scan_interval_sec": 60,
+    "failure_consecutive_count": 3,
+    "pushplus": {
+        "enabled": True,
+        "token": "",
+        "channel": "mail",
+        "option": "",
+    },
+}
 
 
 def load_config() -> dict:
@@ -67,6 +88,20 @@ def load_config() -> dict:
 def get_db_path() -> Path:
     raw = os.getenv("ADBUDGET_DB_PATH")
     return Path(raw).expanduser().resolve() if raw else DEFAULT_DB_PATH
+
+
+def get_alerts_config(config: dict | None = None) -> dict:
+    config = config or load_config()
+    alerts = dict(DEFAULT_ALERTS_CONFIG)
+    alerts.update(config.get("alerts") or {})
+    pushplus = dict(DEFAULT_ALERTS_CONFIG["pushplus"])
+    pushplus.update(alerts.get("pushplus") or {})
+    alerts["pushplus"] = pushplus
+    return alerts
+
+
+def get_pushplus_config(config: dict | None = None) -> dict:
+    return get_alerts_config(config)["pushplus"]
 
 
 def parse_date_start_ms(value: str) -> int | None:
@@ -85,6 +120,21 @@ def parse_date_end_ms(value: str) -> int | None:
     if start_ms is None:
         return None
     return start_ms + (24 * 60 * 60 * 1000) - 1
+
+
+def normalize_alert_kind(value: str | None) -> str:
+    raw = (value or "").strip()
+    if raw == "threshold_exceeded":
+        return "threshold"
+    return raw
+
+
+def compute_cooldown_ms(minutes: int | float | None, fallback_minutes: int) -> int:
+    try:
+        value = int(minutes) if minutes is not None else fallback_minutes
+    except (TypeError, ValueError):
+        value = fallback_minutes
+    return max(1, value) * 60 * 1000
 
 
 def build_provider(config: dict, provider_name: str) -> OpenAICompatibleProvider:
@@ -183,6 +233,312 @@ def build_chip(label: str, tone: str) -> str:
         f'<span class="chip" style="background:{bg};color:{fg};">'
         f"{html.escape(label)}</span>"
     )
+
+
+def build_account_lines(account_name: str | None, account_id: str | None) -> list[str]:
+    lines = [f"账号名称：{account_name or '未识别账号'}"]
+    if not is_missing_account_id(account_id):
+        lines.append(f"账号ID：{account_id}")
+    return lines
+
+
+def build_alert_mail_html(title: str, lines: list[str]) -> str:
+    escaped_rows = "".join(f"<p>{html.escape(line)}</p>" for line in lines)
+    return (
+        "<div style=\"font-family:sans-serif;padding:14px;border:1px solid #e5e7eb;border-radius:8px;\">"
+        f"<h2 style=\"color:#0f172a;\">{html.escape(title)}</h2>"
+        f"{escaped_rows}"
+        "</div>"
+    )
+
+
+async def dispatch_pushplus_alert(
+    db_path: Path,
+    *,
+    instance_id: str,
+    account_id: str | None,
+    account_name: str | None,
+    page_type: str | None,
+    page_url: str | None,
+    script_version: str | None,
+    alert_kind: str,
+    title: str,
+    content_preview: str,
+    content_html: str,
+    severity: str | None,
+    anomaly_type: str | None,
+    triggered_at: int,
+    cooldown_ms: int,
+    force: bool = False,
+) -> dict:
+    latest_record = fetch_latest_alert_for_instance_kind(db_path, instance_id, alert_kind)
+    if (
+        not force
+        and latest_record
+        and latest_record.get("triggered_at")
+        and triggered_at - int(latest_record["triggered_at"]) < cooldown_ms
+    ):
+        return {"ok": False, "skipped": True, "reason": "cooldown"}
+
+    config = load_config()
+    alerts_config = get_alerts_config(config)
+    pushplus = get_pushplus_config(config)
+    channel = pushplus.get("channel") or "mail"
+    channel_option = pushplus.get("option") or ""
+
+    record_payload = {
+        "instance_id": instance_id,
+        "account_id": account_id,
+        "account_name": account_name,
+        "page_type": page_type,
+        "page_url": page_url,
+        "script_version": script_version,
+        "alert_kind": alert_kind,
+        "title": title,
+        "content_preview": content_preview,
+        "channel": channel,
+        "channel_option": channel_option,
+        "delivery_provider": "pushplus",
+        "severity": severity,
+        "anomaly_type": anomaly_type,
+        "triggered_at": triggered_at,
+    }
+
+    if not alerts_config.get("enabled", True):
+        save_alert_record(
+            db_path,
+            {
+                **record_payload,
+                "send_status": "skipped",
+                "provider_response": "alerts.enabled=false",
+            },
+        )
+        return {"ok": False, "skipped": True, "reason": "alerts_disabled"}
+
+    if not pushplus.get("enabled", True) or not pushplus.get("token"):
+        save_alert_record(
+            db_path,
+            {
+                **record_payload,
+                "send_status": "skipped",
+                "provider_response": "未配置 PushPlus Token",
+            },
+        )
+        return {"ok": False, "skipped": True, "reason": "missing_pushplus_token"}
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                "https://www.pushplus.plus/send",
+                json={
+                    "token": pushplus["token"],
+                    "title": title,
+                    "content": content_html,
+                    "template": "html",
+                    "channel": channel,
+                    "option": channel_option,
+                },
+            )
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"raw": response.text}
+        ok = response.status_code >= 200 and response.status_code < 300 and body.get("code", 200) == 200
+        save_alert_record(
+            db_path,
+            {
+                **record_payload,
+                "send_status": "sent" if ok else "failed",
+                "provider_response": json.dumps(body, ensure_ascii=False)[:500],
+            },
+        )
+        return {"ok": ok, "body": body}
+    except Exception as exc:  # noqa: BLE001
+        save_alert_record(
+            db_path,
+            {
+                **record_payload,
+                "send_status": "failed",
+                "provider_response": str(exc)[:500],
+            },
+        )
+        return {"ok": False, "error": str(exc)}
+
+
+def build_threshold_alert_content(payload: dict, summary_text: str) -> tuple[str, str]:
+    metrics = payload.get("metrics") or {}
+    baseline_time = metrics.get("baseline_time") or payload.get("raw_context", {}).get("baseline_time")
+    baseline_text = format_time(int(baseline_time)) if baseline_time else "-"
+    preview_lines = [
+        "消耗异常提醒",
+        *build_account_lines(payload.get("account_name"), payload.get("account_id")),
+        f"脚本实例：{payload.get('instance_id')}",
+        f"页面类型：{payload.get('page_type') or '-'}",
+        f"当前总消耗：{float(metrics.get('current_spend') or 0):.2f} 元",
+        f"基线消耗：{float(metrics.get('baseline_spend') or 0):.2f} 元",
+        f"基线时间：{baseline_text}",
+        f"对比窗口：{int(metrics.get('compare_interval_min') or 0)} 分钟",
+        f"窗口增量：{float(metrics.get('increase_amount') or 0):.2f} 元",
+        f"阈值：{float(metrics.get('notify_threshold') or metrics.get('threshold') or 0):.2f} 元",
+        f"分析结果：{summary_text or '暂无分析结果'}",
+    ]
+    title = f"【磁力金牛预警】{format_account_identity(payload.get('account_name'), payload.get('account_id'))}"
+    return title, "\n".join(preview_lines)
+
+
+async def maybe_send_threshold_alert(
+    db_path: Path,
+    payload: dict,
+    detection_summary,
+    summary_text: str,
+) -> None:
+    metrics = payload.get("metrics") or {}
+    threshold = float(metrics.get("notify_threshold") or metrics.get("threshold") or 0)
+    increase_amount = float(metrics.get("increase_amount") or 0)
+    if threshold <= 0 or increase_amount < threshold:
+        return
+
+    config = load_config()
+    alerts_config = get_alerts_config(config)
+    title, content_preview = build_threshold_alert_content(payload, summary_text)
+    await dispatch_pushplus_alert(
+        db_path,
+        instance_id=payload["instance_id"],
+        account_id=payload.get("account_id"),
+        account_name=payload.get("account_name"),
+        page_type=payload.get("page_type"),
+        page_url=payload.get("page_url"),
+        script_version=payload.get("script_version"),
+        alert_kind="threshold",
+        title=title,
+        content_preview=content_preview,
+        content_html=build_alert_mail_html(title, content_preview.splitlines()),
+        severity=detection_summary.severity,
+        anomaly_type=detection_summary.anomaly_type,
+        triggered_at=int(payload.get("captured_at") or utc_now_ms()),
+        cooldown_ms=compute_cooldown_ms(alerts_config.get("threshold_cooldown_minutes"), 10),
+    )
+
+
+async def send_test_alert(db_path: Path, request: TestAlertRequest) -> dict:
+    account_label = format_account_identity(request.account_name, request.account_id)
+    title = f"【磁力金牛】【测试】{account_label}"
+    preview_lines = [
+        "测试报警",
+        *build_account_lines(request.account_name, request.account_id),
+        f"脚本实例：{request.instance_id or '-'}",
+        f"页面类型：{request.page_type or '-'}",
+        f"当前总消耗：{request.current_spend:.2f} 元",
+        f"{request.compare_interval_min} 分钟增量：{request.increase_amount:.2f} 元",
+        f"分析结果：{request.analysis_text or '未提供'}",
+    ]
+    if request.baseline_spend is not None:
+        preview_lines.insert(-1, f"基线消耗：{request.baseline_spend:.2f} 元")
+    if request.baseline_time:
+        preview_lines.insert(-1, f"基线时间：{format_time(request.baseline_time)}")
+    return await dispatch_pushplus_alert(
+        db_path,
+        instance_id=request.instance_id or "manual-test",
+        account_id=request.account_id,
+        account_name=request.account_name,
+        page_type=request.page_type,
+        page_url=request.page_url,
+        script_version=request.script_version,
+        alert_kind="test",
+        title=title,
+        content_preview="\n".join(preview_lines),
+        content_html=build_alert_mail_html(title, preview_lines),
+        severity="info",
+        anomaly_type="test_alert",
+        triggered_at=request.triggered_at,
+        cooldown_ms=0,
+        force=True,
+    )
+
+
+async def scan_and_alert_instance_health(db_path: Path) -> None:
+    config = load_config()
+    alerts_config = get_alerts_config(config)
+    now_ms = utc_now_ms()
+    offline_after_ms = compute_cooldown_ms(alerts_config.get("offline_after_minutes"), 10)
+    offline_cooldown_ms = compute_cooldown_ms(alerts_config.get("offline_cooldown_minutes"), 60)
+    failure_threshold = int(alerts_config.get("failure_consecutive_count") or 3)
+    failure_cooldown_ms = compute_cooldown_ms(alerts_config.get("failure_cooldown_minutes"), 30)
+
+    for item in fetch_admin_instances(db_path):
+        instance_id = item["instance_id"]
+        account_label = format_account_identity(item.get("account_name"), item.get("account_id"))
+        last_heartbeat_at = item.get("last_heartbeat_at")
+        if last_heartbeat_at and now_ms - int(last_heartbeat_at) >= offline_after_ms:
+            title = f"【磁力金牛离线】{account_label}"
+            lines = [
+                "实例掉线提醒",
+                *build_account_lines(item.get("account_name"), item.get("account_id")),
+                f"脚本实例：{instance_id}",
+                f"页面类型：{item.get('page_type') or '-'}",
+                f"最近心跳：{format_time(last_heartbeat_at)}",
+                f"最近采集：{format_time(item.get('last_capture_at'))}",
+                "问题说明：超过 10 分钟未收到心跳，请检查浏览器页签、网络和脚本运行状态。",
+            ]
+            await dispatch_pushplus_alert(
+                db_path,
+                instance_id=instance_id,
+                account_id=item.get("account_id"),
+                account_name=item.get("account_name"),
+                page_type=item.get("page_type"),
+                page_url=item.get("page_url"),
+                script_version=item.get("script_version"),
+                alert_kind="instance_offline",
+                title=title,
+                content_preview="\n".join(lines),
+                content_html=build_alert_mail_html(title, lines),
+                severity="high",
+                anomaly_type="instance_offline",
+                triggered_at=now_ms,
+                cooldown_ms=offline_cooldown_ms,
+            )
+
+        if (item.get("consecutive_error_count") or 0) >= failure_threshold:
+            title = f"【磁力金牛采集异常】{account_label}"
+            lines = [
+                "连续采集失败提醒",
+                *build_account_lines(item.get("account_name"), item.get("account_id")),
+                f"脚本实例：{instance_id}",
+                f"页面类型：{item.get('page_type') or '-'}",
+                f"连续失败次数：{item.get('consecutive_error_count') or 0}",
+                f"最近采集状态：{item.get('last_capture_status') or '-'}",
+                f"最近错误：{item.get('last_error') or '-'}",
+                "问题说明：实例持续采集失败，请检查页面结构变化、登录状态或脚本报错。",
+            ]
+            await dispatch_pushplus_alert(
+                db_path,
+                instance_id=instance_id,
+                account_id=item.get("account_id"),
+                account_name=item.get("account_name"),
+                page_type=item.get("page_type"),
+                page_url=item.get("page_url"),
+                script_version=item.get("script_version"),
+                alert_kind="capture_failure",
+                title=title,
+                content_preview="\n".join(lines),
+                content_html=build_alert_mail_html(title, lines),
+                severity="high",
+                anomaly_type="capture_failure",
+                triggered_at=now_ms,
+                cooldown_ms=failure_cooldown_ms,
+            )
+
+
+async def health_monitor_loop() -> None:
+    db_path = get_db_path()
+    while True:
+        try:
+            await scan_and_alert_instance_health(db_path)
+        except Exception:
+            pass
+        config = load_config()
+        interval = int(get_alerts_config(config).get("health_scan_interval_sec") or 60)
+        await asyncio.sleep(max(15, interval))
 
 
 def build_analysis_request_from_ingest(payload: dict, history: list[dict]) -> AnalysisRequest | None:
@@ -284,6 +640,7 @@ async def analyze_ingest_payload(db_path: Path, payload: dict) -> None:
         summary=summary,
         raw_text=raw_text,
     )
+    await maybe_send_threshold_alert(db_path, payload, detection_summary, raw_text)
 
 
 def build_admin_html(summary: dict, instances: list[dict], db_path: Path) -> str:
@@ -544,8 +901,20 @@ app = FastAPI(title="AdBudgetSentry Analysis Gateway")
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     ensure_database(get_db_path())
+    app.state.health_monitor_task = asyncio.create_task(health_monitor_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    task = getattr(app.state, "health_monitor_task", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 @app.get("/health")
@@ -604,6 +973,16 @@ def report_alert_record(request: AlertRecordRequest) -> ApiAck:
     return ApiAck(server_time=utc_now_ms(), next_suggested_interval_sec=60)
 
 
+@app.post("/alerts/test", response_model=ApiAck)
+async def trigger_test_alert(request: TestAlertRequest) -> ApiAck:
+    result = await send_test_alert(get_db_path(), request)
+    if result.get("ok"):
+        return ApiAck(message="test alert sent", server_time=utc_now_ms(), next_suggested_interval_sec=60)
+    if result.get("skipped"):
+        return ApiAck(message=f"test alert skipped: {result.get('reason')}", server_time=utc_now_ms(), next_suggested_interval_sec=60)
+    return ApiAck(ok=False, message=f"test alert failed: {result.get('error') or 'unknown'}", server_time=utc_now_ms(), next_suggested_interval_sec=60)
+
+
 @app.get("/admin/summary", response_model=AdminSummary)
 def admin_summary() -> AdminSummary:
     return AdminSummary(**fetch_admin_summary(get_db_path()))
@@ -623,7 +1002,8 @@ def admin_alerts_api(
     date_from: str = "",
     date_to: str = "",
 ) -> list[AdminAlertRecord]:
-    safe_limit = max(1, min(limit, 100))
+    safe_limit = max(1, min(limit, 2000))
+    normalized_alert_kind = normalize_alert_kind(alert_kind)
     return [
         AdminAlertRecord(**item)
         for item in fetch_admin_alerts(
@@ -631,11 +1011,74 @@ def admin_alerts_api(
             limit=safe_limit,
             account_keyword=account_keyword,
             send_status=send_status,
-            alert_kind=alert_kind,
+            alert_kind=normalized_alert_kind,
             date_from_ms=parse_date_start_ms(date_from),
             date_to_ms=parse_date_end_ms(date_to),
         )
     ]
+
+
+@app.get("/admin/alerts/export.csv")
+def admin_alerts_export_csv(
+    account_keyword: str = "",
+    send_status: str = "",
+    alert_kind: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> Response:
+    alerts = fetch_admin_alerts(
+        get_db_path(),
+        limit=5000,
+        account_keyword=account_keyword,
+        send_status=send_status,
+        alert_kind=normalize_alert_kind(alert_kind),
+        date_from_ms=parse_date_start_ms(date_from),
+        date_to_ms=parse_date_end_ms(date_to),
+    )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "id",
+            "instance_id",
+            "account_name",
+            "account_id",
+            "alert_kind",
+            "send_status",
+            "severity",
+            "anomaly_type",
+            "channel",
+            "delivery_provider",
+            "triggered_at",
+            "title",
+            "content_preview",
+            "provider_response",
+        ]
+    )
+    for item in alerts:
+        writer.writerow(
+            [
+                item.get("id"),
+                item.get("instance_id"),
+                item.get("account_name"),
+                item.get("account_id"),
+                item.get("alert_kind"),
+                item.get("send_status"),
+                item.get("severity"),
+                item.get("anomaly_type"),
+                item.get("channel"),
+                item.get("delivery_provider"),
+                format_time(item.get("triggered_at")),
+                item.get("title"),
+                item.get("content_preview"),
+                item.get("provider_response"),
+            ]
+        )
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=adbudget-alerts.csv"},
+    )
 
 
 @app.get("/admin/api/instances/{instance_id}", response_model=AdminInstanceDetail)
@@ -675,12 +1118,13 @@ def admin_alerts_page(
     date_to: str = "",
 ) -> HTMLResponse:
     db_path = get_db_path()
+    normalized_alert_kind = normalize_alert_kind(alert_kind)
     alerts = fetch_admin_alerts(
         db_path,
         limit=500,
         account_keyword=account_keyword,
         send_status=send_status,
-        alert_kind=alert_kind,
+        alert_kind=normalized_alert_kind,
         date_from_ms=parse_date_start_ms(date_from),
         date_to_ms=parse_date_end_ms(date_to),
     )

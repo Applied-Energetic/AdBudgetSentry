@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         磁力金牛财务报警助手
 // @namespace    http://tampermonkey.net/
-// @version      2.3.0
-// @description  监控磁力金牛财务页消耗，并向本地后端上报采集、心跳和错误信息
+// @version      2.4.0
+// @description  监控磁力金牛财务页消耗，并由本地后端统一负责分析与告警
 // @author       Codex
 // @match        https://niu.e.kuaishou.com/financial/record*
 // @match        https://niu.e.kuaishou.com/*
@@ -56,7 +56,6 @@
 		lastCheckTime: GM_getValue("last_check_time", 0),
 		lastEvaluateAttemptAt: GM_getValue("last_evaluate_attempt_at", 0),
 		lastReloadTime: GM_getValue("last_reload_time", Date.now()),
-		lastNotifyTime: GM_getValue("last_notify_time", 0),
 		lastAnalysisText: GM_getValue("last_analysis_text", ""),
 		lastBackendMessage: GM_getValue("last_backend_message", "等待上报"),
 		lastHeartbeatSentAt: GM_getValue("last_heartbeat_sent_at", 0),
@@ -67,9 +66,6 @@
 		config: {
 			accountIdOverride: GM_getValue("account_id_override", ""),
 			accountNameOverride: GM_getValue("account_name_override", ""),
-			pushplusToken: GM_getValue("pushplus_token", ""),
-			pushplusChannel: GM_getValue("pushplus_channel", "mail"),
-			pushplusOption: GM_getValue("pushplus_option", ""),
 			refreshIntervalMin: GM_getValue("refresh_interval_min", 5),
 			compareIntervalMin: GM_getValue("compare_interval_min", 30),
 			notifyThreshold: GM_getValue("notify_threshold", 1000),
@@ -518,16 +514,8 @@
 		return `${state.config.backendBaseUrl}/error`;
 	}
 
-	function getAlertRecordUrl() {
-		return `${state.config.backendBaseUrl}/alert-record`;
-	}
-
-	function getThresholdAlertSeverity() {
-		if (!state.config.notifyThreshold) return "medium";
-		const ratio = state.increaseInWindow / state.config.notifyThreshold;
-		if (ratio >= 2) return "high";
-		if (ratio >= 1.2) return "medium";
-		return "low";
+	function getTestAlertUrl() {
+		return `${state.config.backendBaseUrl}/alerts/test`;
 	}
 
 	function setBackendMessage(message) {
@@ -665,44 +653,31 @@
 		}
 	}
 
-	async function sendAlertRecord(payload) {
+	async function triggerBackendTestAlert(analysisText) {
 		try {
-			await gmRequest({
+			const response = await gmRequest({
 				method: "POST",
-				url: getAlertRecordUrl(),
+				url: getTestAlertUrl(),
 				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify(payload),
-				timeout: 15000,
+				data: JSON.stringify({
+					...buildCommonContext(),
+					current_spend: state.currentSpend,
+					increase_amount: state.increaseInWindow,
+					compare_interval_min: state.config.compareIntervalMin,
+					baseline_spend: state.baselineSpend || null,
+					baseline_time: state.baselineTime || null,
+					analysis_text: analysisText || "",
+					triggered_at: Date.now(),
+				}),
+				timeout: 20000,
 			});
-		} catch (_error) {
-			// Ignore backend alert-record failures to avoid blocking the user-facing alert.
+			return JSON.parse(response.responseText || "{}");
+		} catch (error) {
+			return {
+				ok: false,
+				message: error?.error || error?.message || "unknown error",
+			};
 		}
-	}
-
-	function buildAlertRecordPayload({
-		alertKind,
-		title,
-		contentPreview,
-		sendStatus,
-		providerResponse,
-		severity,
-		anomalyType,
-		triggeredAt,
-	}) {
-		return {
-			...buildCommonContext(),
-			alert_kind: alertKind,
-			title,
-			content_preview: contentPreview || "",
-			channel: state.config.pushplusChannel || "mail",
-			channel_option: state.config.pushplusOption || "",
-			delivery_provider: "pushplus",
-			send_status: sendStatus,
-			provider_response: providerResponse || null,
-			severity: severity || null,
-			anomaly_type: anomalyType || null,
-			triggered_at: triggeredAt || Date.now(),
-		};
 	}
 
 	async function requestAiAnalysis() {
@@ -737,93 +712,6 @@
 		}
 	}
 
-	async function pushAlert({
-		title,
-		content,
-		alertKind,
-		contentPreview,
-		severity,
-		anomalyType,
-	}) {
-		const triggeredAt = Date.now();
-		if (!state.config.pushplusToken) {
-			await sendAlertRecord(
-				buildAlertRecordPayload({
-					alertKind,
-					title,
-					contentPreview,
-					sendStatus: "skipped",
-					providerResponse: "未配置 PushPlus Token",
-					severity,
-					anomalyType,
-					triggeredAt,
-				}),
-			);
-			return { ok: false, skipped: true };
-		}
-
-		try {
-			const response = await gmRequest({
-				method: "POST",
-				url: "https://www.pushplus.plus/send",
-				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify({
-					token: state.config.pushplusToken,
-					title,
-					content,
-					template: "html",
-					channel: state.config.pushplusChannel || "mail",
-					option: state.config.pushplusOption || "",
-				}),
-				timeout: 20000,
-			});
-			let body = {};
-			try {
-				body = JSON.parse(response.responseText || "{}");
-			} catch (_error) {
-				body = { raw: response.responseText || "" };
-			}
-			const ok =
-				response.status >= 200 &&
-				response.status < 300 &&
-				(!body.code || body.code === 200);
-			await sendAlertRecord(
-				buildAlertRecordPayload({
-					alertKind,
-					title,
-					contentPreview,
-					sendStatus: ok ? "sent" : "failed",
-					providerResponse: JSON.stringify(body).slice(0, 500),
-					severity,
-					anomalyType,
-					triggeredAt,
-				}),
-			);
-			if (!ok) {
-				setBackendMessage(
-					`PushPlus 返回异常 ${body.msg || body.message || response.status}`,
-				);
-			}
-			return { ok, body };
-		} catch (error) {
-			const message = error?.error || error?.message || "unknown error";
-			await sendAlertRecord(
-				buildAlertRecordPayload({
-					alertKind,
-					title,
-					contentPreview,
-					sendStatus: "failed",
-					providerResponse: message,
-					severity,
-					anomalyType,
-					triggeredAt,
-				}),
-			);
-			setBackendMessage(`PushPlus 发送失败 ${message}`);
-			return { ok: false, error: message };
-		}
-	}
-
 	function renderAnalysisText(text) {
 		$("#analysis-output").text(text || "暂无 AI 分析结果。");
 	}
@@ -853,9 +741,6 @@
 		state.config.accountNameOverride = $("#account-name-override")
 			.val()
 			.trim();
-		state.config.pushplusToken = $("#pushplus-token").val().trim();
-		state.config.pushplusChannel = $("#pushplus-channel").val() || "mail";
-		state.config.pushplusOption = $("#pushplus-option").val().trim();
 		state.config.refreshIntervalMin =
 			Number($("#refresh-interval").val()) || 5;
 		state.config.compareIntervalMin =
@@ -870,9 +755,6 @@
 
 		GM_setValue("account_id_override", state.config.accountIdOverride);
 		GM_setValue("account_name_override", state.config.accountNameOverride);
-		GM_setValue("pushplus_token", state.config.pushplusToken);
-		GM_setValue("pushplus_channel", state.config.pushplusChannel);
-		GM_setValue("pushplus_option", state.config.pushplusOption);
 		GM_setValue("refresh_interval_min", state.config.refreshIntervalMin);
 		GM_setValue("compare_interval_min", state.config.compareIntervalMin);
 		GM_setValue("notify_threshold", state.config.notifyThreshold);
@@ -1003,23 +885,9 @@
                                 <input id="account-id-override" type="text" value="${state.config.accountIdOverride}" placeholder="自动识别" />
                             </div>
                         </div>
-                        <div class="field-group">
-                            <label for="pushplus-token">PushPlus Token</label>
-                            <input id="pushplus-token" type="password" value="${state.config.pushplusToken}" placeholder="输入 PushPlus Token" />
-                        </div>
-                        <div class="sentry-grid">
-                            <div class="field-group">
-                                <label for="pushplus-channel">PushPlus 渠道</label>
-                                <select id="pushplus-channel">
-                                    <option value="mail" ${state.config.pushplusChannel === "mail" ? "selected" : ""}>QQ邮箱/邮件</option>
-                                    <option value="wechat" ${state.config.pushplusChannel === "wechat" ? "selected" : ""}>微信公众号</option>
-                                    <option value="webhook" ${state.config.pushplusChannel === "webhook" ? "selected" : ""}>Webhook</option>
-                                </select>
-                            </div>
-                            <div class="field-group">
-                                <label for="pushplus-option">渠道编码(option)</label>
-                                <input id="pushplus-option" type="text" value="${state.config.pushplusOption}" placeholder="留空或自定" />
-                            </div>
+                        <div class="status-stack" style="margin: 0 0 10px 0;">
+                            <div><strong>告警发送：</strong>已改由后端统一处理</div>
+                            <div>PushPlus Token、渠道和冷却规则请在后端配置文件中维护。</div>
                         </div>
                         <div class="sentry-grid">
                             <div class="field-group">
@@ -1096,7 +964,6 @@
 
 		$("#reset-history-btn").on("click", () => {
 			state.history = [];
-			state.lastNotifyTime = 0;
 			state.baselineSpend = 0;
 			state.baselineTime = 0;
 			state.currentSpend = 0;
@@ -1104,7 +971,6 @@
 			state.lastCheckTime = 0;
 			state.lastEvaluateAttemptAt = 0;
 			GM_setValue("spend_history", []);
-			GM_setValue("last_notify_time", 0);
 			state.lastAnalysisText = "";
 			GM_setValue("last_analysis_text", "");
 			persistRuntimeMetrics();
@@ -1115,39 +981,13 @@
 		$("#test-alert-btn").on("click", async () => {
 			saveConfigFromUI();
 			const analysisText = await requestAiAnalysis();
-			const alertTitle = `【磁力金牛】【测试】${buildAlertAccountLabel()}`;
-			const previewLines = [
-				"测试报警",
-				...buildAccountInfoLines(),
-				`脚本实例：${state.instanceId}`,
-				`当前总消耗：${formatMoney(state.currentSpend)}`,
-				`${state.config.compareIntervalMin} 分钟增量：${formatMoney(state.increaseInWindow)}`,
-				`分析结果：${analysisText || "未开启 AI 分析"}`,
-			];
-			const alertResult = await pushAlert({
-				title: alertTitle,
-				alertKind: "test",
-				contentPreview: previewLines.join("\n"),
-				severity: "info",
-				anomalyType: "test_alert",
-				content: `
-                <div style="font-family:sans-serif;padding:12px;">
-                    <h3>测试报警</h3>
-                    <p>账号名称：${getAccountName()}</p>
-                    ${hasRecognizedAccountId() ? `<p>账号ID：${getAccountId()}</p>` : ""}
-                    <p>脚本实例：${state.instanceId}</p>
-                    <p>当前总消耗：${formatMoney(state.currentSpend)}</p>
-                    <p>${state.config.compareIntervalMin} 分钟增量：${formatMoney(state.increaseInWindow)}</p>
-                    <pre style="white-space:pre-wrap;">${analysisText || "未开启 AI 分析"}</pre>
-                </div>
-                `,
-			});
-			if (alertResult.ok) {
+			const result = await triggerBackendTestAlert(analysisText);
+			if (result.ok) {
+				setBackendMessage("后端测试报警已发送");
 				alert("测试报警已发送。");
-			} else if (alertResult.skipped) {
-				alert("未配置 PushPlus Token，后台已记录为跳过。");
 			} else {
-				alert("测试报警发送失败，后台已记录失败结果。");
+				setBackendMessage(`后端测试报警失败 ${result.message || "unknown error"}`);
+				alert("测试报警发送失败，请检查后端 PushPlus 配置。");
 			}
 		});
 
@@ -1156,73 +996,6 @@
 			const analysisText = await requestAiAnalysis();
 			renderAnalysisText(analysisText);
 		});
-	}
-
-	async function handleThresholdAlert() {
-		const cooldownMs = 10 * 60 * 1000;
-		const now = Date.now();
-		if (state.increaseInWindow < state.config.notifyThreshold) return;
-		if (now - state.lastNotifyTime < cooldownMs) return;
-
-		const analysisText = await requestAiAnalysis();
-		const title = `【磁力金牛预警】${buildAlertAccountLabel()}`;
-		const previewLines = [
-			"消耗异常提醒",
-			...buildAccountInfoLines(),
-			`脚本实例：${state.instanceId}`,
-			`页面类型：${getPageType()}`,
-			`当前总消耗：${formatMoney(state.currentSpend)}`,
-			`基线消耗：${formatMoney(state.baselineSpend)}`,
-			`基线时间：${state.baselineTime ? new Date(state.baselineTime).toLocaleString() : "-"}`,
-			`对比窗口：${state.config.compareIntervalMin} 分钟`,
-			`窗口增量：${formatMoney(state.increaseInWindow)}`,
-			`阈值：${formatMoney(state.config.notifyThreshold)}`,
-			`分析结果：${analysisText || "未开启 AI 分析"}`,
-		];
-		const content = `
-            <div style="font-family:sans-serif;padding:14px;border:1px solid #e5e7eb;border-radius:8px;">
-                <h2 style="color:#b91c1c;">消耗异常提醒</h2>
-                <p>账号名称：<strong>${getAccountName()}</strong></p>
-                ${hasRecognizedAccountId() ? `<p>账号ID：<strong>${getAccountId()}</strong></p>` : ""}
-                <p>脚本实例：<strong>${state.instanceId}</strong></p>
-                <p>页面类型：<strong>${getPageType()}</strong></p>
-                <p>当前总消耗：<strong>${formatMoney(state.currentSpend)}</strong></p>
-                <p>基线消耗：<strong>${formatMoney(state.baselineSpend)}</strong></p>
-                <p>对比窗口：<strong>${state.config.compareIntervalMin} 分钟</strong></p>
-                <p>窗口增量：<strong style="color:#b91c1c;">${formatMoney(state.increaseInWindow)}</strong></p>
-                <p>阈值：<strong>${formatMoney(state.config.notifyThreshold)}</strong></p>
-                <p>基线时间：${state.baselineTime ? new Date(state.baselineTime).toLocaleString() : "-"}</p>
-                <p>后端地址：${state.config.backendBaseUrl}</p>
-                <h3>AI 分析</h3>
-                <pre style="white-space:pre-wrap;font-size:12px;background:#f8fafc;padding:10px;border-radius:6px;">${analysisText || "未开启 AI 分析"}</pre>
-            </div>
-        `;
-
-		await pushAlert({
-			title,
-			content,
-			alertKind: "threshold",
-			contentPreview: previewLines.join("\n"),
-			severity: getThresholdAlertSeverity(),
-			anomalyType: "threshold_breach",
-		});
-
-		GM_notification({
-			title: "磁力金牛消耗异常",
-			text: `${state.config.compareIntervalMin} 分钟增量 ${state.increaseInWindow.toFixed(2)} 元`,
-			timeout: 10000,
-		});
-
-		try {
-			const audio = new Audio(CONFIG.audioAlertUrl);
-			audio.play().catch(() => {});
-		} catch (_error) {
-			// Ignore audio failures.
-		}
-
-		state.lastNotifyTime = now;
-		GM_setValue("last_notify_time", now);
-		renderStatus();
 	}
 
 	async function evaluateSpend() {
@@ -1258,7 +1031,6 @@
 
 			renderStatus();
 			await sendIngest();
-			await handleThresholdAlert();
 		} catch (error) {
 			const message = `采集失败：${error?.message || "unknown error"}`;
 			state.lastCaptureStatus = "error";

@@ -9,5 +9,20 @@
     "base_url": "http://127.0.0.1:11434/v1",
     "api_key": "EMPTY",
     "model": "qwen2.5:3b-instruct"
+  },
+  "alerts": {
+    "enabled": true,
+    "threshold_cooldown_minutes": 10,
+    "offline_after_minutes": 10,
+    "offline_cooldown_minutes": 60,
+    "failure_cooldown_minutes": 30,
+    "health_scan_interval_sec": 60,
+    "failure_consecutive_count": 3,
+    "pushplus": {
+      "enabled": true,
+      "token": "replace-with-your-pushplus-token",
+      "channel": "mail",
+      "option": ""
+    }
   }
 }
