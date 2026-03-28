@@ -76,6 +76,9 @@ $env:ADBUDGET_DB_PATH="E:\Code\AdBudgetSentry\data\app.db"
 - `GET /admin/summary`
 - `GET /admin/instances`
 - `GET /admin/alerts`
+- `GET /admin/instances/{instance_id}`
+- `GET /admin/api/instances/{instance_id}`
+- `GET /admin/api/instances/{instance_id}/history`
 
 ### 智能分析
 

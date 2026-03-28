@@ -598,6 +598,57 @@ def fetch_history_for_instance(db_path: Path, instance_id: str, limit: int = 60)
     return items
 
 
+def fetch_capture_history_for_instance(db_path: Path, instance_id: str, limit: int = 120) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT captured_at, row_count, metrics_json
+            FROM capture_events
+            WHERE instance_id = ?
+            ORDER BY captured_at DESC
+            LIMIT ?
+            """,
+            (instance_id, limit),
+        ).fetchall()
+
+    items: list[dict] = []
+    for row in reversed(rows):
+        try:
+            metrics = json.loads(row["metrics_json"] or "{}")
+        except json.JSONDecodeError:
+            metrics = {}
+        current_spend = metrics.get("current_spend")
+        if current_spend is None:
+            continue
+        try:
+            items.append(
+                {
+                    "captured_at": int(row["captured_at"]),
+                    "current_spend": float(current_spend),
+                    "increase_amount": float(metrics.get("increase_amount") or 0),
+                    "baseline_spend": (
+                        float(metrics["baseline_spend"])
+                        if metrics.get("baseline_spend") is not None
+                        else None
+                    ),
+                    "compare_interval_min": (
+                        int(metrics["compare_interval_min"])
+                        if metrics.get("compare_interval_min") is not None
+                        else None
+                    ),
+                    "notify_threshold": (
+                        float(metrics["notify_threshold"])
+                        if metrics.get("notify_threshold") is not None
+                        else None
+                    ),
+                    "row_count": row["row_count"],
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    return items
+
+
 def save_analysis_summary(
     db_path: Path,
     *,
@@ -662,6 +713,51 @@ def fetch_latest_analysis_for_instance(db_path: Path, instance_id: str) -> dict 
         ).fetchone()
 
     return dict(row) if row else None
+
+
+def fetch_recent_analyses_for_instance(db_path: Path, instance_id: str, limit: int = 10) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                provider,
+                model,
+                anomaly_type,
+                severity,
+                score,
+                summary,
+                raw_text,
+                created_at
+            FROM analysis_summaries
+            WHERE instance_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (instance_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def fetch_recent_errors_for_instance(db_path: Path, instance_id: str, limit: int = 10) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                error_type,
+                error_message,
+                occurred_at,
+                page_url,
+                script_version
+            FROM error_reports
+            WHERE instance_id = ?
+            ORDER BY occurred_at DESC
+            LIMIT ?
+            """,
+            (instance_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def fetch_admin_instances(db_path: Path) -> list[dict]:
@@ -740,6 +836,54 @@ def fetch_admin_alerts(db_path: Path, limit: int = 20) -> list[dict]:
             (limit,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def fetch_alerts_for_instance(db_path: Path, instance_id: str, limit: int = 20) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                instance_id,
+                account_id,
+                account_name,
+                page_type,
+                page_url,
+                script_version,
+                alert_kind,
+                title,
+                content_preview,
+                channel,
+                channel_option,
+                delivery_provider,
+                send_status,
+                provider_response,
+                severity,
+                anomaly_type,
+                triggered_at,
+                created_at
+            FROM alert_records
+            WHERE instance_id = ?
+            ORDER BY triggered_at DESC, id DESC
+            LIMIT ?
+            """,
+            (instance_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def fetch_instance_detail(db_path: Path, instance_id: str) -> dict | None:
+    items = fetch_admin_instances(db_path)
+    for item in items:
+        if item["instance_id"] != instance_id:
+            continue
+        detail = dict(item)
+        detail["recent_errors"] = fetch_recent_errors_for_instance(db_path, instance_id, limit=10)
+        detail["recent_alerts"] = fetch_alerts_for_instance(db_path, instance_id, limit=10)
+        detail["recent_analyses"] = fetch_recent_analyses_for_instance(db_path, instance_id, limit=10)
+        detail["capture_history"] = fetch_capture_history_for_instance(db_path, instance_id, limit=120)
+        return detail
+    return None
 
 
 def fetch_admin_summary(db_path: Path) -> dict:

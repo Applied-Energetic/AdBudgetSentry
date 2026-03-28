@@ -9,13 +9,15 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
-from admin_ui import build_admin_dashboard_html
+from admin_ui import build_admin_dashboard_html, build_instance_detail_html
 from anomaly import detect_spend_anomaly
 from database import (
     ensure_database,
     fetch_admin_alerts,
     fetch_admin_instances,
+    fetch_capture_history_for_instance,
     fetch_history_for_instance,
+    fetch_instance_detail,
     fetch_latest_analysis_for_instance,
     fetch_admin_summary,
     save_alert_record,
@@ -27,6 +29,8 @@ from database import (
 )
 from models import (
     AdminAlertRecord,
+    AdminCaptureHistoryPoint,
+    AdminInstanceDetail,
     AdminInstanceSummary,
     AdminSummary,
     AnalysisRequest,
@@ -598,6 +602,24 @@ def admin_alerts(limit: int = 20) -> list[AdminAlertRecord]:
     return [AdminAlertRecord(**item) for item in fetch_admin_alerts(get_db_path(), limit=safe_limit)]
 
 
+@app.get("/admin/api/instances/{instance_id}", response_model=AdminInstanceDetail)
+def admin_instance_detail_api(instance_id: str) -> AdminInstanceDetail:
+    detail = fetch_instance_detail(get_db_path(), instance_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    return AdminInstanceDetail(**detail)
+
+
+@app.get("/admin/api/instances/{instance_id}/history", response_model=list[AdminCaptureHistoryPoint])
+def admin_instance_history_api(instance_id: str, limit: int = 120) -> list[AdminCaptureHistoryPoint]:
+    safe_limit = max(1, min(limit, 500))
+    detail = fetch_instance_detail(get_db_path(), instance_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    history = fetch_capture_history_for_instance(get_db_path(), instance_id, limit=safe_limit)
+    return [AdminCaptureHistoryPoint(**item) for item in history]
+
+
 @app.get("/", response_class=HTMLResponse)
 @app.get("/admin", response_class=HTMLResponse)
 def admin_home() -> HTMLResponse:
@@ -606,6 +628,15 @@ def admin_home() -> HTMLResponse:
     instances = fetch_admin_instances(db_path)
     alerts = fetch_admin_alerts(db_path, limit=20)
     return HTMLResponse(build_admin_dashboard_html(summary, instances, alerts, db_path))
+
+
+@app.get("/admin/instances/{instance_id}", response_class=HTMLResponse)
+def admin_instance_detail_page(instance_id: str) -> HTMLResponse:
+    db_path = get_db_path()
+    detail = fetch_instance_detail(db_path, instance_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    return HTMLResponse(build_instance_detail_html(detail, db_path))
 
 
 @app.post("/analyze", response_model=AnalysisResponse)

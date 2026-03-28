@@ -175,3 +175,41 @@ class AdminAlertRecord(BaseModel):
     anomaly_type: str | None = None
     triggered_at: int
     created_at: int
+
+
+class AdminCaptureHistoryPoint(BaseModel):
+    captured_at: int
+    current_spend: float
+    increase_amount: float = 0
+    baseline_spend: float | None = None
+    compare_interval_min: int | None = None
+    notify_threshold: float | None = None
+    row_count: int | None = None
+
+
+class AdminErrorRecord(BaseModel):
+    id: int
+    error_type: str
+    error_message: str
+    occurred_at: int
+    page_url: str | None = None
+    script_version: str | None = None
+
+
+class AdminAnalysisRecord(BaseModel):
+    id: int
+    provider: str
+    model: str
+    anomaly_type: str
+    severity: str
+    score: float
+    summary: str
+    raw_text: str
+    created_at: int
+
+
+class AdminInstanceDetail(AdminInstanceSummary):
+    recent_errors: list[AdminErrorRecord] = Field(default_factory=list)
+    recent_alerts: list[AdminAlertRecord] = Field(default_factory=list)
+    recent_analyses: list[AdminAnalysisRecord] = Field(default_factory=list)
+    capture_history: list[AdminCaptureHistoryPoint] = Field(default_factory=list)

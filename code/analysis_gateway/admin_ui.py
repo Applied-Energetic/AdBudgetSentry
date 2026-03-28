@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 
 def format_time(timestamp_ms: int | None) -> str:
@@ -50,6 +51,71 @@ def build_chip(label: str, tone: str) -> str:
     )
 
 
+def build_trend_chart(history: list[dict]) -> str:
+    if len(history) < 2:
+        return '<div class="empty-panel">最近采样点不足，暂时无法绘制趋势图。</div>'
+
+    width = 920
+    height = 260
+    padding_left = 48
+    padding_right = 16
+    padding_top = 16
+    padding_bottom = 34
+    inner_width = width - padding_left - padding_right
+    inner_height = height - padding_top - padding_bottom
+
+    spend_values = [float(item.get("current_spend") or 0) for item in history]
+    delta_values = [float(item.get("increase_amount") or 0) for item in history]
+    max_value = max(spend_values + delta_values + [1.0])
+
+    def to_x(index: int) -> float:
+        if len(history) == 1:
+            return padding_left + inner_width / 2
+        return padding_left + (inner_width * index / (len(history) - 1))
+
+    def to_y(value: float) -> float:
+        return padding_top + inner_height - (value / max_value) * inner_height
+
+    spend_points = " ".join(f"{to_x(i):.1f},{to_y(v):.1f}" for i, v in enumerate(spend_values))
+    delta_points = " ".join(f"{to_x(i):.1f},{to_y(v):.1f}" for i, v in enumerate(delta_values))
+
+    guide_lines = []
+    for ratio in (0.25, 0.5, 0.75, 1):
+        y = padding_top + inner_height - inner_height * ratio
+        label = max_value * ratio
+        guide_lines.append(
+            f'<line x1="{padding_left}" y1="{y:.1f}" x2="{width - padding_right}" y2="{y:.1f}" '
+            'stroke="rgba(148, 163, 184, 0.25)" stroke-dasharray="4 6" />'
+            f'<text x="8" y="{y + 4:.1f}" fill="#64748b" font-size="11">{label:.0f}</text>'
+        )
+
+    x_labels = []
+    step = max(1, len(history) // 6)
+    for actual_index in range(0, len(history), step):
+        item = history[actual_index]
+        x = to_x(actual_index)
+        label = datetime.fromtimestamp(item["captured_at"] / 1000).strftime("%H:%M")
+        x_labels.append(
+            f'<text x="{x:.1f}" y="{height - 8}" fill="#64748b" font-size="11" text-anchor="middle">{html.escape(label)}</text>'
+        )
+
+    return f"""
+    <div class="chart-wrap">
+        <svg viewBox="0 0 {width} {height}" class="trend-chart" role="img" aria-label="实例采样趋势图">
+            <rect x="0" y="0" width="{width}" height="{height}" rx="20" fill="rgba(248,250,252,0.96)"></rect>
+            {''.join(guide_lines)}
+            <polyline points="{spend_points}" fill="none" stroke="#0f766e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            <polyline points="{delta_points}" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            {''.join(x_labels)}
+        </svg>
+        <div class="chart-legend">
+            <span><i class="dot dot-teal"></i>当前总消耗</span>
+            <span><i class="dot dot-blue"></i>窗口增量</span>
+        </div>
+    </div>
+    """
+
+
 def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: list[dict], db_path: Path) -> str:
     cards = [
         ("在线实例", str(summary["total_instances"]), "teal"),
@@ -87,8 +153,8 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
             f"""
             <tr>
                 <td>
-                    <div class="cell-title">{html.escape(account_text)}</div>
-                    <div class="cell-sub">{html.escape(item.get("instance_id") or "-")}</div>
+                        <div class="cell-title"><a class="detail-link" href="/admin/instances/{quote(item.get("instance_id") or "", safe="")}">{html.escape(account_text)}</a></div>
+                        <div class="cell-sub">{html.escape(item.get("instance_id") or "-")}</div>
                 </td>
                 <td>
                     <div class="cell-title">{html.escape(item.get("page_type") or "-")}</div>
@@ -218,6 +284,15 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
             .metric-card, .panel {{
                 background: var(--panel); backdrop-filter: blur(20px); border: 1px solid var(--border);
                 border-radius: var(--radius-lg); box-shadow: var(--shadow);
+            }}
+            a {{ color: inherit; text-decoration: none; }}
+            .detail-link {{
+                color: #0f172a;
+                border-bottom: 1px solid transparent;
+            }}
+            .detail-link:hover {{
+                color: #0f766e;
+                border-bottom-color: rgba(15, 118, 110, 0.35);
             }}
             .metric-card {{ padding: 18px 18px 20px; }}
             .metric-label {{ font-size: 13px; color: var(--muted); margin-bottom: 10px; }}
@@ -385,6 +460,288 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
                 </div>
                 <div class="footer-note">页面刷新即可看到最新告警与实例状态，无需手动清缓存。</div>
             </section>
+        </main>
+    </body>
+    </html>
+    """
+
+
+def build_instance_detail_html(detail: dict, db_path: Path) -> str:
+    history = detail.get("capture_history") or []
+    chart_html = build_trend_chart(history)
+    health_tone = {"green": "green", "yellow": "yellow", "red": "red"}.get(detail.get("health_status"), "slate")
+
+    info_cards = [
+        ("账号", format_account_identity(detail.get("account_name"), detail.get("account_id"))),
+        ("实例 ID", detail.get("instance_id") or "-"),
+        ("页面类型", detail.get("page_type") or "-"),
+        ("脚本版本", detail.get("script_version") or "-"),
+        ("最近心跳", format_time(detail.get("last_heartbeat_at"))),
+        ("最近采集", format_time(detail.get("last_capture_at"))),
+        ("最近错误", compact_text(detail.get("last_error"), 90)),
+        ("采集状态", detail.get("last_capture_status") or "-"),
+    ]
+    info_cards_html = "".join(
+        f"""
+        <div class="detail-card">
+            <div class="detail-label">{html.escape(label)}</div>
+            <div class="detail-value">{html.escape(value)}</div>
+        </div>
+        """
+        for label, value in info_cards
+    )
+
+    history_rows = "".join(
+        f"""
+        <tr>
+            <td>{format_time(item.get("captured_at"))}</td>
+            <td>{float(item.get("current_spend") or 0):.2f}</td>
+            <td>{float(item.get("increase_amount") or 0):.2f}</td>
+            <td>{'-' if item.get('baseline_spend') is None else f"{float(item.get('baseline_spend') or 0):.2f}"}</td>
+            <td>{item.get("compare_interval_min") or '-'}</td>
+            <td>{item.get("row_count") or '-'}</td>
+        </tr>
+        """
+        for item in reversed(history[-20:])
+    ) or '<tr><td colspan="6" class="empty-state">暂无采样记录</td></tr>'
+
+    analysis_cards = "".join(
+        f"""
+        <article class="stack-card">
+            <div class="stack-top">
+                <div class="cell-title">{html.escape(item.get("summary") or "-")}</div>
+                {build_chip((item.get("severity") or "-").upper(), {"low": "teal", "medium": "yellow", "high": "red"}.get(item.get("severity") or "", "slate"))}
+            </div>
+            <div class="cell-sub">{format_time(item.get("created_at"))} · {html.escape(item.get("provider") or "-")} / {html.escape(item.get("model") or "-")} · {html.escape(item.get("anomaly_type") or "-")}</div>
+            <div class="stack-preview">{html.escape(compact_text(item.get("raw_text"), 260))}</div>
+        </article>
+        """
+        for item in detail.get("recent_analyses", [])
+    ) or '<div class="empty-panel">最近还没有分析记录。</div>'
+
+    error_cards = "".join(
+        f"""
+        <article class="stack-card">
+            <div class="stack-top">
+                <div class="cell-title">{html.escape(item.get("error_type") or "-")}</div>
+                {build_chip("ERROR", "red")}
+            </div>
+            <div class="cell-sub">{format_time(item.get("occurred_at"))}</div>
+            <div class="stack-preview">{html.escape(item.get("error_message") or "-")}</div>
+        </article>
+        """
+        for item in detail.get("recent_errors", [])
+    ) or '<div class="empty-panel">最近没有错误记录。</div>'
+
+    alert_cards = "".join(
+        f"""
+        <article class="stack-card">
+            <div class="stack-top">
+                <div class="cell-title">{html.escape(item.get("title") or "-")}</div>
+                {build_chip((item.get("send_status") or "-").upper(), {"sent": "green", "failed": "red", "skipped": "yellow"}.get(item.get("send_status") or "", "slate"))}
+            </div>
+            <div class="cell-sub">{format_time(item.get("triggered_at"))} · {html.escape(item.get("channel") or "-")} · {html.escape(item.get("alert_kind") or "-")}</div>
+            <div class="stack-preview">{html.escape(compact_text(item.get("content_preview"), 220))}</div>
+        </article>
+        """
+        for item in detail.get("recent_alerts", [])
+    ) or '<div class="empty-panel">最近没有告警记录。</div>'
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>实例详情 - AdBudgetSentry</title>
+        <style>
+            :root {{
+                --bg-top: #f3fbfa;
+                --bg-bottom: #eef2ff;
+                --panel: rgba(255,255,255,0.92);
+                --border: rgba(148,163,184,0.20);
+                --ink: #0f172a;
+                --muted: #5b6b82;
+                --shadow: 0 18px 44px rgba(15,23,42,0.10);
+            }}
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                color: var(--ink);
+                font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+                background:
+                    radial-gradient(circle at 0% 0%, rgba(45, 212, 191, 0.18), transparent 28%),
+                    radial-gradient(circle at 100% 20%, rgba(96, 165, 250, 0.16), transparent 22%),
+                    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+            }}
+            .shell {{ max-width: 1380px; margin: 0 auto; padding: 28px 20px 44px; }}
+            .hero {{
+                border-radius: 28px;
+                padding: 28px;
+                background: linear-gradient(135deg, rgba(15, 118, 110, 0.96), rgba(15, 23, 42, 0.92));
+                color: #fff;
+                box-shadow: 0 26px 64px rgba(15, 118, 110, 0.26);
+            }}
+            .hero-top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+            .hero h1 {{ margin: 8px 0 8px; font-size: clamp(28px, 4vw, 42px); line-height: 1.05; }}
+            .hero p {{ margin: 0; color: rgba(255,255,255,0.84); font-size: 15px; line-height: 1.7; max-width: 780px; }}
+            .hero-meta {{ display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; }}
+            .hero-badge {{
+                padding: 10px 14px; border-radius: 999px; font-size: 13px; color: rgba(255,255,255,0.92);
+                background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.14);
+            }}
+            .back-link {{
+                display:inline-flex; align-items:center; gap:8px; color:#fff; text-decoration:none;
+                padding:10px 14px; border-radius:999px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.16);
+            }}
+            .chip {{
+                display: inline-flex; align-items:center; justify-content:center; padding: 6px 10px; border-radius:999px;
+                font-size:12px; font-weight:700; letter-spacing:0.04em; white-space:nowrap;
+            }}
+            .grid {{ display:grid; gap:16px; margin-top:20px; }}
+            .summary-grid {{ grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }}
+            .panel {{
+                background: var(--panel);
+                border: 1px solid var(--border);
+                border-radius: 22px;
+                padding: 22px;
+                box-shadow: var(--shadow);
+            }}
+            .panel-head {{ display:flex; justify-content:space-between; gap:12px; align-items:flex-end; margin-bottom:16px; }}
+            .panel-title {{ margin:0; font-size:20px; }}
+            .panel-subtitle {{ margin-top:6px; font-size:13px; color:var(--muted); }}
+            .detail-card {{
+                border-radius: 18px;
+                padding: 16px;
+                background: #fff;
+                border: 1px solid rgba(226,232,240,0.86);
+            }}
+            .detail-label {{ font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:8px; }}
+            .detail-value {{ font-size:14px; line-height:1.6; word-break:break-all; }}
+            .two-col {{ display:grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr); gap:16px; margin-top:20px; }}
+            .trend-chart {{ width:100%; height:auto; display:block; }}
+            .chart-wrap {{ display:grid; gap:12px; }}
+            .chart-legend {{ display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--muted); }}
+            .dot {{ width:10px; height:10px; border-radius:999px; display:inline-block; margin-right:8px; }}
+            .dot-teal {{ background:#0f766e; }}
+            .dot-blue {{ background:#1d4ed8; }}
+            .stack-list {{ display:grid; gap:12px; }}
+            .stack-card {{ padding:16px; border-radius:18px; background:#fff; border:1px solid rgba(226,232,240,0.86); }}
+            .stack-top {{ display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }}
+            .cell-title {{ font-size:14px; font-weight:700; line-height:1.5; }}
+            .cell-sub {{ margin-top:4px; font-size:12px; line-height:1.6; color:var(--muted); word-break:break-all; }}
+            .stack-preview {{ margin-top:10px; font-size:13px; line-height:1.75; color:#1e293b; white-space:pre-wrap; }}
+            .table-shell {{ overflow:hidden; border-radius:20px; border:1px solid rgba(226,232,240,0.88); background:#fff; }}
+            table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+            th, td {{ padding:14px; border-bottom:1px solid rgba(226,232,240,0.84); text-align:left; vertical-align:top; }}
+            th {{ font-size:12px; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted); background:rgba(248,250,252,0.94); }}
+            .empty-panel, .empty-state {{ padding:28px 16px; text-align:center; color:var(--muted); }}
+            .footer-note {{ margin-top:16px; font-size:12px; color:var(--muted); }}
+            @media (max-width: 980px) {{
+                .hero-top, .two-col {{ grid-template-columns:1fr; display:grid; }}
+            }}
+            @media (max-width: 860px) {{
+                .shell {{ padding:18px 14px 28px; }}
+                .table-shell {{ overflow-x:auto; }}
+                table {{ min-width:760px; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <main class="shell">
+            <section class="hero">
+                <div class="hero-top">
+                    <div>
+                        <a class="back-link" href="/admin">返回总览</a>
+                        <h1>{html.escape(format_account_identity(detail.get("account_name"), detail.get("account_id")))}</h1>
+                        <p>实例详情页用于排障。这里会集中展示该脚本实例的最近采样、最新分析、最近告警和最近错误，方便快速判断问题是采样异常、阈值命中还是发送链路异常。</p>
+                        <div class="hero-meta">
+                            <div class="hero-badge">数据库 {html.escape(str(db_path))}</div>
+                            <div class="hero-badge">实例 {html.escape(detail.get("instance_id") or "-")}</div>
+                            <div class="hero-badge">状态 {detail.get("health_status", "-").upper()}</div>
+                            <div class="hero-badge">最近采集 {format_time(detail.get("last_capture_at"))}</div>
+                        </div>
+                    </div>
+                    <div>{build_chip(detail.get("health_status", "-").upper(), health_tone)}</div>
+                </div>
+            </section>
+
+            <section class="grid summary-grid">
+                {info_cards_html}
+            </section>
+
+            <section class="two-col">
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2 class="panel-title">最近采样趋势</h2>
+                            <div class="panel-subtitle">绿色线是当前总消耗，蓝色线是窗口增量。用于快速判断上涨节奏和异常触发前后的变化。</div>
+                        </div>
+                        {build_chip(f"{len(history)} 个采样点", "blue")}
+                    </div>
+                    {chart_html}
+                </section>
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2 class="panel-title">最近分析</h2>
+                            <div class="panel-subtitle">优先看这里判断模型和规则最近给出的结论。</div>
+                        </div>
+                        {build_chip(f"{len(detail.get('recent_analyses', []))} 条", "teal")}
+                    </div>
+                    <div class="stack-list">{analysis_cards}</div>
+                </section>
+            </section>
+
+            <section class="panel" style="margin-top:20px;">
+                <div class="panel-head">
+                    <div>
+                        <h2 class="panel-title">最近采样历史</h2>
+                        <div class="panel-subtitle">这里列出最近 20 条采样的核心数值，方便和趋势图交叉验证。</div>
+                    </div>
+                    {build_chip("最近 20 条", "slate")}
+                </div>
+                <div class="table-shell">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>采样时间</th>
+                                <th>当前总消耗</th>
+                                <th>窗口增量</th>
+                                <th>基线消耗</th>
+                                <th>比较窗口</th>
+                                <th>行数</th>
+                            </tr>
+                        </thead>
+                        <tbody>{history_rows}</tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="two-col">
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2 class="panel-title">最近告警记录</h2>
+                            <div class="panel-subtitle">确认该实例是否真的触发并发出了告警。</div>
+                        </div>
+                        {build_chip(f"{len(detail.get('recent_alerts', []))} 条", "yellow")}
+                    </div>
+                    <div class="stack-list">{alert_cards}</div>
+                </section>
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2 class="panel-title">最近错误记录</h2>
+                            <div class="panel-subtitle">如果这里出现连续错误，优先排查页面结构变化和采集选择器。</div>
+                        </div>
+                        {build_chip(f"{len(detail.get('recent_errors', []))} 条", "red")}
+                    </div>
+                    <div class="stack-list">{error_cards}</div>
+                </section>
+            </section>
+
+            <div class="footer-note">趋势图和采样历史来自后端保存的 capture_events，不依赖浏览器当前页重新抓取。</div>
         </main>
     </body>
     </html>
