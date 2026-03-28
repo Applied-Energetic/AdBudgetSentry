@@ -469,6 +469,19 @@ def build_admin_dashboard_html(summary: dict, instances: list[dict], alerts: lis
                 <div class="footer-note">页面刷新即可看到最新告警与实例状态，无需手动清缓存。</div>
             </section>
         </main>
+        <script>
+            document.querySelectorAll('.click-row[data-href]').forEach(function (row) {{
+                row.addEventListener('click', function (event) {{
+                    if (event.target.closest('a, button, input, select, textarea, label')) {{
+                        return;
+                    }}
+                    var href = row.getAttribute('data-href');
+                    if (href) {{
+                        window.location.href = href;
+                    }}
+                }});
+            }});
+        </script>
     </body>
     </html>
     """
@@ -751,19 +764,6 @@ def build_instance_detail_html(detail: dict, db_path: Path) -> str:
 
             <div class="footer-note">趋势图和采样历史来自后端保存的 capture_events，不依赖浏览器当前页重新抓取。</div>
         </main>
-        <script>
-            document.querySelectorAll('.click-row[data-href]').forEach(function (row) {{
-                row.addEventListener('click', function (event) {{
-                    if (event.target.closest('a, button, input, select, textarea, label')) {{
-                        return;
-                    }}
-                    var href = row.getAttribute('data-href');
-                    if (href) {{
-                        window.location.href = href;
-                    }}
-                }});
-            }});
-        </script>
     </body>
     </html>
     """
@@ -993,6 +993,19 @@ def build_alerts_page_html(
                 <div class="alert-grid">{alerts_html}</div>
             </section>
         </main>
+        <script>
+            document.querySelectorAll('.click-row[data-href]').forEach(function (row) {{
+                row.addEventListener('click', function (event) {{
+                    if (event.target.closest('a, button, input, select, textarea, label')) {{
+                        return;
+                    }}
+                    var href = row.getAttribute('data-href');
+                    if (href) {{
+                        window.location.href = href;
+                    }}
+                }});
+            }});
+        </script>
     </body>
     </html>
     """
