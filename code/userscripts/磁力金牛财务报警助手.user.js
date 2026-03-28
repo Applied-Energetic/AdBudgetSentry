@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         磁力金牛财务报警助手
 // @namespace    http://tampermonkey.net/
-// @version      2.2.0
+// @version      2.3.0
 // @description  监控磁力金牛财务页消耗，并向本地后端上报采集、心跳和错误信息
 // @author       Codex
 // @match        https://niu.e.kuaishou.com/financial/record*
@@ -23,7 +23,10 @@
         historyRetentionMs: 24 * 60 * 60 * 1000,
         checkDelayMs: 3000,
         uiTickMs: 1000,
+        sampleIntervalMs: 60 * 1000,
         heartbeatIntervalMs: 2 * 60 * 1000,
+        scrapeRetryCount: 10,
+        scrapeRetryDelayMs: 1500,
         defaultBackendBaseUrl: "http://127.0.0.1:8787",
         audioAlertUrl: "https://actions.google.com/sounds/v1/alarms/alarm_clock_short.ogg",
     };
@@ -45,11 +48,12 @@
             left: GM_getValue("panel_left", null),
             top: GM_getValue("panel_top", null),
         },
-        currentSpend: 0,
-        increaseInWindow: 0,
-        baselineSpend: 0,
-        baselineTime: 0,
-        lastCheckTime: 0,
+        currentSpend: GM_getValue("current_spend", 0),
+        increaseInWindow: GM_getValue("increase_in_window", 0),
+        baselineSpend: GM_getValue("baseline_spend", 0),
+        baselineTime: GM_getValue("baseline_time", 0),
+        lastCheckTime: GM_getValue("last_check_time", 0),
+        lastEvaluateAttemptAt: GM_getValue("last_evaluate_attempt_at", 0),
         lastReloadTime: GM_getValue("last_reload_time", Date.now()),
         lastNotifyTime: GM_getValue("last_notify_time", 0),
         lastAnalysisText: GM_getValue("last_analysis_text", ""),
@@ -58,6 +62,7 @@
         lastCaptureStatus: GM_getValue("last_capture_status", "warning"),
         lastErrorMessage: GM_getValue("last_error_message", ""),
         history: GM_getValue("spend_history", []),
+        isEvaluating: false,
         config: {
             accountIdOverride: GM_getValue("account_id_override", ""),
             accountNameOverride: GM_getValue("account_name_override", ""),
@@ -334,9 +339,22 @@
         return detectedSpend;
     }
 
+    function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
     function trimHistory() {
         const now = Date.now();
         state.history = state.history.filter((item) => now - item.time <= CONFIG.historyRetentionMs);
+    }
+
+    function persistRuntimeMetrics() {
+        GM_setValue("current_spend", state.currentSpend);
+        GM_setValue("increase_in_window", state.increaseInWindow);
+        GM_setValue("baseline_spend", state.baselineSpend);
+        GM_setValue("baseline_time", state.baselineTime);
+        GM_setValue("last_check_time", state.lastCheckTime);
+        GM_setValue("last_evaluate_attempt_at", state.lastEvaluateAttemptAt);
     }
 
     function appendHistory(spend) {
@@ -351,16 +369,35 @@
 
     function getBaselineRecord() {
         const compareStart = Date.now() - state.config.compareIntervalMin * 60 * 1000;
-        let baseline = state.history[0] || { time: Date.now(), spend: state.currentSpend };
+        const fallback = state.history[0] || { time: Date.now(), spend: state.currentSpend };
+        let latestBeforeWindow = null;
+        let earliestAfterWindow = null;
 
         for (const item of state.history) {
-            if (item.time >= compareStart) {
-                baseline = item;
-                break;
+            if (item.time <= compareStart) {
+                latestBeforeWindow = item;
+                continue;
+            }
+            if (!earliestAfterWindow) {
+                earliestAfterWindow = item;
             }
         }
 
-        return baseline;
+        return latestBeforeWindow || earliestAfterWindow || fallback;
+    }
+
+    async function scrapeTodaySpendWithRetry() {
+        let spend = -1;
+        for (let attempt = 0; attempt < CONFIG.scrapeRetryCount; attempt++) {
+            spend = scrapeTodaySpend();
+            if (spend >= 0) {
+                return spend;
+            }
+            if (attempt < CONFIG.scrapeRetryCount - 1) {
+                await sleep(CONFIG.scrapeRetryDelayMs);
+            }
+        }
+        return spend;
     }
 
     function serializeHistory() {
@@ -918,10 +955,15 @@
             state.lastNotifyTime = 0;
             state.baselineSpend = 0;
             state.baselineTime = 0;
+            state.currentSpend = 0;
+            state.increaseInWindow = 0;
+            state.lastCheckTime = 0;
+            state.lastEvaluateAttemptAt = 0;
             GM_setValue("spend_history", []);
             GM_setValue("last_notify_time", 0);
             state.lastAnalysisText = "";
             GM_setValue("last_analysis_text", "");
+            persistRuntimeMetrics();
             renderStatus();
             alert("历史数据已重置。");
         });
@@ -988,6 +1030,8 @@
             `脚本实例：${state.instanceId}`,
             `页面类型：${getPageType()}`,
             `当前总消耗：${formatMoney(state.currentSpend)}`,
+            `基线消耗：${formatMoney(state.baselineSpend)}`,
+            `基线时间：${state.baselineTime ? new Date(state.baselineTime).toLocaleString() : "-"}`,
             `对比窗口：${state.config.compareIntervalMin} 分钟`,
             `窗口增量：${formatMoney(state.increaseInWindow)}`,
             `阈值：${formatMoney(state.config.notifyThreshold)}`,
@@ -1001,6 +1045,7 @@
                 <p>脚本实例：<strong>${state.instanceId}</strong></p>
                 <p>页面类型：<strong>${getPageType()}</strong></p>
                 <p>当前总消耗：<strong>${formatMoney(state.currentSpend)}</strong></p>
+                <p>基线消耗：<strong>${formatMoney(state.baselineSpend)}</strong></p>
                 <p>对比窗口：<strong>${state.config.compareIntervalMin} 分钟</strong></p>
                 <p>窗口增量：<strong style="color:#b91c1c;">${formatMoney(state.increaseInWindow)}</strong></p>
                 <p>阈值：<strong>${formatMoney(state.config.notifyThreshold)}</strong></p>
@@ -1039,8 +1084,12 @@
     }
 
     async function evaluateSpend() {
+        if (state.isEvaluating) return;
+        state.isEvaluating = true;
+        state.lastEvaluateAttemptAt = Date.now();
+        GM_setValue("last_evaluate_attempt_at", state.lastEvaluateAttemptAt);
         try {
-            const spend = scrapeTodaySpend();
+            const spend = await scrapeTodaySpendWithRetry();
             if (spend < 0) {
                 state.lastCaptureStatus = "warning";
                 state.lastErrorMessage = "未找到今日消耗数据行";
@@ -1063,6 +1112,7 @@
             state.lastErrorMessage = "";
             GM_setValue("last_capture_status", state.lastCaptureStatus);
             GM_setValue("last_error_message", "");
+            persistRuntimeMetrics();
 
             renderStatus();
             await sendIngest();
@@ -1076,18 +1126,25 @@
             setBackendMessage(message);
             await sendErrorReport("capture_error", message);
             await sendHeartbeat("error", message);
+        } finally {
+            state.isEvaluating = false;
         }
     }
 
     async function mainLoop() {
+        const now = Date.now();
         const refreshMs = state.config.refreshIntervalMin * 60 * 1000;
-        if (Date.now() - state.lastReloadTime >= refreshMs) {
-            GM_setValue("last_reload_time", Date.now());
+        if (now - state.lastReloadTime >= refreshMs) {
+            GM_setValue("last_reload_time", now);
             location.reload();
             return;
         }
 
-        if (Date.now() - state.lastHeartbeatSentAt >= CONFIG.heartbeatIntervalMs) {
+        if (!state.isEvaluating && now - state.lastEvaluateAttemptAt >= CONFIG.sampleIntervalMs) {
+            await evaluateSpend();
+        }
+
+        if (now - state.lastHeartbeatSentAt >= CONFIG.heartbeatIntervalMs) {
             await sendHeartbeat(state.lastCaptureStatus, state.lastErrorMessage);
         }
 

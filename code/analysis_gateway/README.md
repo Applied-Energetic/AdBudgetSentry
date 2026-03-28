@@ -5,6 +5,11 @@
 1. 接收 Tampermonkey 采集端上报的 `ingest / heartbeat / error`
 2. 继续提供已有的 `/analyze` 智能分析能力
 
+更完整的项目说明见：
+
+- `../../docs/接口说明.md`
+- `../../docs/项目开发说明.md`
+
 ## 当前能力
 
 - `SQLite` 本地持久化
