@@ -1,10 +1,10 @@
 import { ArrowLeft, RefreshCcw, Trash2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 
 import { AlertSeverityBadge, AlertStatusBadge } from "@/components/alert-badges"
 import { HealthBadge } from "@/components/health-badge"
+import { TrendChartCard, type TrendChartPoint } from "@/components/trend-chart-card"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -21,6 +21,8 @@ import {
   getCaptureStatusLabel,
 } from "@/lib/format"
 import type { AdminInstanceDetail } from "@/lib/types"
+
+const HISTORY_WINDOW_MS = 12 * 60 * 60 * 1000
 
 export function InstanceDetailPage() {
   const navigate = useNavigate()
@@ -50,16 +52,34 @@ export function InstanceDetailPage() {
     void load()
   }, [instanceId])
 
-  const chartData = useMemo(() => {
+  const historyPoints = useMemo(() => {
     if (!detail) return []
-    return [...detail.capture_history]
-      .sort((left, right) => left.captured_at - right.captured_at)
-      .map((item) => ({
-        label: formatShortTime(item.captured_at),
-        currentSpend: item.current_spend,
-        increaseAmount: item.increase_amount,
-      }))
+    const sorted = [...detail.capture_history].sort((left, right) => left.captured_at - right.captured_at)
+    const latestTimestamp = sorted.at(-1)?.captured_at
+    if (!latestTimestamp) return []
+    const threshold = latestTimestamp - HISTORY_WINDOW_MS
+    return sorted.filter((item) => item.captured_at >= threshold)
   }, [detail])
+
+  const currentSpendChartData = useMemo<TrendChartPoint[]>(
+    () =>
+      historyPoints.map((item) => ({
+        timestamp: item.captured_at,
+        label: formatShortTime(item.captured_at),
+        value: item.current_spend,
+      })),
+    [historyPoints],
+  )
+
+  const increaseAmountChartData = useMemo<TrendChartPoint[]>(
+    () =>
+      historyPoints.map((item) => ({
+        timestamp: item.captured_at,
+        label: formatShortTime(item.captured_at),
+        value: item.increase_amount,
+      })),
+    [historyPoints],
+  )
 
   const windowMinutes = useMemo(() => {
     if (!detail) return 10
@@ -213,21 +233,19 @@ export function InstanceDetailPage() {
       <section className="grid gap-6 xl:grid-cols-2">
         <TrendChartCard
           title="今日总消耗金额"
-          description="查看当前实例当日累计消耗的采样趋势。"
-          data={chartData}
-          dataKey="currentSpend"
-          lineName="当前总消耗"
+          description="默认展示最近 12 小时采样走势，支持手机端全屏查看。"
+          data={currentSpendChartData}
           color="var(--color-chart-1)"
-          emptyText="采样点不足，暂时无法生成今日总消耗趋势图。"
+          emptyText="最近 12 小时内采样点不足，暂时无法生成今日总消耗趋势图。"
+          valueLabel="元"
         />
         <TrendChartCard
           title={`${windowMinutes} 分钟窗口消耗监控`}
-          description="用于观察短周期波动，判断窗口期内是否出现异常抬升。"
-          data={chartData}
-          dataKey="increaseAmount"
-          lineName={`${windowMinutes} 分钟窗口增量`}
+          description="默认展示最近 12 小时窗口波动，用于观察短周期异常抬升。"
+          data={increaseAmountChartData}
           color="var(--color-chart-2)"
-          emptyText={`采样点不足，暂时无法生成 ${windowMinutes} 分钟窗口趋势图。`}
+          emptyText={`最近 12 小时内采样点不足，暂时无法生成 ${windowMinutes} 分钟窗口趋势图。`}
+          valueLabel="元"
         />
       </section>
 
@@ -330,55 +348,5 @@ function InfoItem({ label, value }: { label: string; value: string }) {
       <div className="text-sm text-muted-foreground">{label}</div>
       <div className="mt-2 text-sm font-medium leading-6 text-foreground">{value}</div>
     </div>
-  )
-}
-
-function TrendChartCard({
-  title,
-  description,
-  data,
-  dataKey,
-  lineName,
-  color,
-  emptyText,
-}: {
-  title: string
-  description: string
-  data: Array<{ label: string; currentSpend: number; increaseAmount: number }>
-  dataKey: "currentSpend" | "increaseAmount"
-  lineName: string
-  color: string
-  emptyText: string
-}) {
-  return (
-    <Card className="soft-panel">
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent className="h-[300px] pt-2">
-        {data.length >= 2 ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data}>
-              <CartesianGrid vertical={false} stroke="var(--color-border)" />
-              <XAxis dataKey="label" tickLine={false} axisLine={false} />
-              <YAxis tickLine={false} axisLine={false} />
-              <Tooltip
-                contentStyle={{
-                  borderRadius: 16,
-                  border: "1px solid var(--color-border)",
-                  background: "var(--color-card)",
-                }}
-              />
-              <Line type="monotone" dataKey={dataKey} name={lineName} stroke={color} strokeWidth={2.5} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/80 text-sm text-muted-foreground">
-            {emptyText}
-          </div>
-        )}
-      </CardContent>
-    </Card>
   )
 }

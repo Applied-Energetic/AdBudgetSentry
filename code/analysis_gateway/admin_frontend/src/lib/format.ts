@@ -6,6 +6,11 @@ const currencyFormatter = new Intl.NumberFormat("zh-CN", {
   maximumFractionDigits: 2,
 })
 
+const decimalFormatter = new Intl.NumberFormat("zh-CN", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
+
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
   month: "2-digit",
@@ -33,6 +38,14 @@ export function formatCurrency(value: number | null | undefined) {
   }
 
   return currencyFormatter.format(value)
+}
+
+export function formatDecimal(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-"
+  }
+
+  return decimalFormatter.format(value)
 }
 
 export function formatDateTime(value: number | null | undefined) {
