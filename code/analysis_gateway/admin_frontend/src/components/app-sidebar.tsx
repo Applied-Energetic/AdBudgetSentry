@@ -5,7 +5,7 @@ import { Link, useLocation } from "react-router-dom"
 import { HealthBadge } from "@/components/health-badge"
 import { Badge } from "@/components/ui/badge"
 import { adminApi } from "@/lib/api"
-import { formatAccountIdentity } from "@/lib/format"
+import { formatAccountIdentity, formatDisplayName } from "@/lib/format"
 import type { AdminInstanceSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -69,7 +69,7 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
           {instances.map((instance) => {
             const href = `/admin/instances/${instance.instance_id}`
             const isActive = location.pathname === href
-            const displayName = instance.alias || formatAccountIdentity(instance.account_name, instance.account_id)
+            const displayName = instance.alias || formatDisplayName(instance.account_name, instance.account_id)
 
             return (
               <Link

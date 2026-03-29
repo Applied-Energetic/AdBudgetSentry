@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, BarChart3, PencilLine, Server } from "lucide-react"
+import { Activity, AlertTriangle, BarChart3, PencilLine, Server, Wifi, WifiOff } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
@@ -14,14 +14,19 @@ import {
   compactText,
   formatAccountIdentity,
   formatAlertKind,
+  formatCurrency,
   formatDateTime,
+  formatDisplayName,
   getCaptureStatusLabel,
 } from "@/lib/format"
-import type { DashboardPayload } from "@/lib/types"
+import type { AdminInstanceDetail, DashboardPayload } from "@/lib/types"
 import { cn } from "@/lib/utils"
+
+const CONNECTIVITY_WINDOW_MS = 30 * 60 * 1000
 
 export function DashboardPage() {
   const [data, setData] = useState<DashboardPayload | null>(null)
+  const [spotlights, setSpotlights] = useState<AdminInstanceDetail[]>([])
   const [error, setError] = useState<string | null>(null)
 
   const load = async () => {
@@ -36,6 +41,24 @@ export function DashboardPage() {
   useEffect(() => {
     void load()
   }, [])
+
+  useEffect(() => {
+    const spotlightIds = data?.instances.slice(0, 2).map((instance) => instance.instance_id) ?? []
+    if (spotlightIds.length === 0) {
+      setSpotlights([])
+      return
+    }
+
+    let active = true
+    void Promise.all(spotlightIds.map((id) => adminApi.getInstanceDetail(id).catch(() => null))).then((results) => {
+      if (!active) return
+      setSpotlights(results.filter((item): item is AdminInstanceDetail => Boolean(item)))
+    })
+
+    return () => {
+      active = false
+    }
+  }, [data?.instances])
 
   const healthDistribution = useMemo(() => {
     if (!data) return []
@@ -83,6 +106,16 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      <section className="space-y-3 md:hidden">
+        <div>
+          <h2 className="text-base font-semibold text-foreground">重点实例实时监控</h2>
+          <p className="mt-1 text-sm text-muted-foreground">首页优先展示两个重点实例的实时状态、波动额度和最近告警。</p>
+        </div>
+        {spotlights.map((detail) => (
+          <SpotlightCard key={detail.instance_id} detail={detail} />
+        ))}
+      </section>
+
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           title="在线实例"
@@ -183,9 +216,7 @@ export function DashboardPage() {
                 <div key={instance.instance_id} className="rounded-2xl border border-border/70 bg-background/90 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="font-medium">
-                        {instance.alias || formatAccountIdentity(instance.account_name, instance.account_id)}
-                      </div>
+                      <div className="font-medium">{instance.alias || formatDisplayName(instance.account_name, instance.account_id)}</div>
                       <div className="mt-1 text-sm text-muted-foreground">
                         {compactText(instance.remarks || formatAccountIdentity(instance.account_name, instance.account_id), 56)}
                       </div>
@@ -230,9 +261,7 @@ export function DashboardPage() {
                   {data.instances.slice(0, 8).map((instance) => (
                     <TableRow key={instance.instance_id}>
                       <TableCell className="whitespace-normal">
-                        <div className="font-medium">
-                          {instance.alias || formatAccountIdentity(instance.account_name, instance.account_id)}
-                        </div>
+                        <div className="font-medium">{instance.alias || formatDisplayName(instance.account_name, instance.account_id)}</div>
                         <div className="mt-1 text-sm text-muted-foreground">
                           {compactText(instance.remarks || formatAccountIdentity(instance.account_name, instance.account_id), 60)}
                         </div>
@@ -275,9 +304,7 @@ export function DashboardPage() {
                   <div className="font-medium">{alert.title}</div>
                   <AlertStatusBadge status={alert.send_status} />
                 </div>
-                <div className="mt-2 text-sm text-muted-foreground">
-                  {formatAccountIdentity(alert.account_name, alert.account_id)}
-                </div>
+                <div className="mt-2 text-sm text-muted-foreground">{formatAccountIdentity(alert.account_name, alert.account_id)}</div>
                 <div className="mt-1 text-sm text-muted-foreground">
                   {formatAlertKind(alert.alert_kind)} / {formatDateTime(alert.triggered_at)}
                 </div>
@@ -293,5 +320,72 @@ export function DashboardPage() {
         </Card>
       </section>
     </div>
+  )
+}
+
+function SpotlightCard({ detail }: { detail: AdminInstanceDetail }) {
+  const windowMinutes =
+    [...detail.capture_history].sort((left, right) => right.captured_at - left.captured_at).find((item) => item.compare_interval_min)
+      ?.compare_interval_min ?? 10
+  const latestAlert = detail.recent_alerts[0]
+  const isConnected = Boolean(detail.last_heartbeat_at && Date.now() - detail.last_heartbeat_at < CONNECTIVITY_WINDOW_MS)
+  const displayName = detail.alias || formatDisplayName(detail.account_name, detail.account_id)
+
+  return (
+    <Link to={`/admin/instances/${detail.instance_id}`} className="block">
+      <Card className="soft-panel overflow-hidden">
+        <CardHeader className="space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <CardTitle className="line-clamp-1 text-base">{displayName}</CardTitle>
+              <CardDescription className="mt-1 line-clamp-1">
+                {detail.remarks || formatAccountIdentity(detail.account_name, detail.account_id)}
+              </CardDescription>
+            </div>
+            <HealthBadge status={detail.health_status} />
+          </div>
+          <div
+            className={cn(
+              "inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-xs font-medium",
+              isConnected
+                ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200"
+                : "bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200",
+            )}
+          >
+            {isConnected ? <Wifi className="size-3.5" /> : <WifiOff className="size-3.5" />}
+            连通性：{isConnected ? "正常" : "异常"}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-2xl bg-muted/80 p-3">
+              <div className="text-xs text-muted-foreground">当前总消耗</div>
+              <div className="mt-2 text-lg font-semibold text-foreground">{formatCurrency(detail.latest_current_spend)}</div>
+            </div>
+            <div className="rounded-2xl bg-muted/80 p-3">
+              <div className="text-xs text-muted-foreground">{windowMinutes} 分钟窗口</div>
+              <div className="mt-2 text-lg font-semibold text-foreground">{formatCurrency(detail.latest_increase_amount)}</div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-border/70 bg-background/80 p-3">
+            <div className="text-xs text-muted-foreground">最近一次告警</div>
+            {latestAlert ? (
+              <>
+                <div className="mt-2 line-clamp-2 text-sm font-medium text-foreground">
+                  {compactText(latestAlert.content_preview || latestAlert.title, 70)}
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {formatDateTime(latestAlert.triggered_at)} / {formatAlertKind(latestAlert.alert_kind)}
+                </div>
+                <div className="mt-2 text-sm text-foreground">涉及额度：{formatCurrency(detail.latest_increase_amount)}</div>
+              </>
+            ) : (
+              <div className="mt-2 text-sm text-muted-foreground">最近没有告警记录。</div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </Link>
   )
 }

@@ -16,6 +16,7 @@ import {
   formatAlertKind,
   formatCurrency,
   formatDateTime,
+  formatDisplayName,
   formatShortTime,
   getCaptureStatusLabel,
 } from "@/lib/format"
@@ -136,7 +137,7 @@ export function InstanceDetailPage() {
             返回总览
           </Link>
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="page-heading">{detail.alias || formatAccountIdentity(detail.account_name, detail.account_id)}</h1>
+            <h1 className="page-heading">{detail.alias || formatDisplayName(detail.account_name, detail.account_id)}</h1>
             <HealthBadge status={detail.health_status} />
           </div>
           <p className="page-subheading">{formatAccountIdentity(detail.account_name, detail.account_id)}</p>

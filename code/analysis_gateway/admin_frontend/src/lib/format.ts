@@ -14,6 +14,19 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   minute: "2-digit",
 })
 
+function sanitizeIdentityPart(value: string | null | undefined) {
+  if (!value) return ""
+  const normalized = value.trim()
+  if (!normalized) return ""
+
+  const lower = normalized.toLowerCase()
+  if (lower.includes("unknown") || normalized.includes("未识别") || normalized.includes("未知")) {
+    return ""
+  }
+
+  return normalized
+}
+
 export function formatCurrency(value: number | null | undefined) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return "-"
@@ -43,12 +56,21 @@ export function formatShortTime(value: number | null | undefined) {
   }).format(new Date(value))
 }
 
+export function formatDisplayName(accountName: string | null, accountId: string | null) {
+  const cleanAccountName = sanitizeIdentityPart(accountName)
+  const cleanAccountId = sanitizeIdentityPart(accountId)
+  return cleanAccountName || cleanAccountId || "未命名实例"
+}
+
 export function formatAccountIdentity(accountName: string | null, accountId: string | null) {
-  if (accountName && accountId) {
-    return `${accountName} / ${accountId}`
+  const cleanAccountName = sanitizeIdentityPart(accountName)
+  const cleanAccountId = sanitizeIdentityPart(accountId)
+
+  if (cleanAccountName && cleanAccountId && cleanAccountName !== cleanAccountId) {
+    return `${cleanAccountName} / ${cleanAccountId}`
   }
 
-  return accountName || accountId || "未知账户"
+  return cleanAccountName || cleanAccountId || "未知账户"
 }
 
 export function compactText(value: string | null | undefined, limit = 90) {
