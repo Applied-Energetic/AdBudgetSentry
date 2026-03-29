@@ -48,7 +48,7 @@ export function formatAccountIdentity(accountName: string | null, accountId: str
     return `${accountName} / ${accountId}`
   }
 
-  return accountName || accountId || "Unknown account"
+  return accountName || accountId || "未知账户"
 }
 
 export function compactText(value: string | null | undefined, limit = 90) {
@@ -57,41 +57,60 @@ export function compactText(value: string | null | undefined, limit = 90) {
   }
 
   const normalized = value.replace(/\s+/g, " ").trim()
-  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 3)}...`
 }
 
 export function getHealthLabel(status: HealthStatus) {
   return {
-    green: "Healthy",
-    yellow: "Observe",
-    red: "Risk",
+    green: "健康",
+    yellow: "关注",
+    red: "风险",
   }[status]
 }
 
 export function getSendStatusLabel(status: AlertSendStatus) {
   return {
-    sent: "Sent",
-    failed: "Failed",
-    skipped: "Skipped",
+    sent: "已发送",
+    failed: "发送失败",
+    skipped: "已跳过",
   }[status]
 }
 
 export function getSeverityLabel(value: string | null | undefined) {
   const raw = (value || "").toLowerCase()
-  return {
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-  }[raw] || (value || "-")
+  return (
+    {
+      low: "低",
+      medium: "中",
+      high: "高",
+    }[raw] || value || "-"
+  )
 }
 
 export function getCaptureStatusLabel(value: string | null | undefined) {
   const raw = (value || "").toLowerCase()
-  return {
-    ok: "OK",
-    success: "Success",
-    warning: "Warning",
-    failed: "Failed",
-    error: "Error",
-  }[raw] || (value || "-")
+  return (
+    {
+      ok: "正常",
+      success: "成功",
+      warning: "预警",
+      failed: "失败",
+      error: "错误",
+    }[raw] || value || "-"
+  )
+}
+
+export function formatAlertKind(value: string | null | undefined) {
+  const raw = (value || "").toLowerCase()
+  return (
+    {
+      threshold: "阈值告警",
+      offline: "离线告警",
+      anomaly: "异常告警",
+      error: "错误告警",
+      analysis: "分析告警",
+      spend_jump: "消耗突增",
+      spend_drop: "消耗骤降",
+    }[raw] || value || "-"
+  )
 }

@@ -13,6 +13,7 @@ import { adminApi } from "@/lib/api"
 import {
   compactText,
   formatAccountIdentity,
+  formatAlertKind,
   formatCurrency,
   formatDateTime,
   formatShortTime,
@@ -59,6 +60,14 @@ export function InstanceDetailPage() {
       }))
   }, [detail])
 
+  const windowMinutes = useMemo(() => {
+    if (!detail) return 10
+    const latestWithWindow = [...detail.capture_history]
+      .sort((left, right) => right.captured_at - left.captured_at)
+      .find((item) => item.compare_interval_min)
+    return latestWithWindow?.compare_interval_min ?? 10
+  }, [detail])
+
   const saveMeta = async () => {
     try {
       setSaving(true)
@@ -72,7 +81,7 @@ export function InstanceDetailPage() {
   }
 
   const deleteInstance = async () => {
-    const confirmed = window.confirm("删除实例后，如果脚本再次上报，该实例会重新出现。确认继续吗？")
+    const confirmed = window.confirm("删除实例后，如果脚本再次上报，这个实例会重新出现。确认继续吗？")
     if (!confirmed) return
 
     try {
@@ -84,7 +93,7 @@ export function InstanceDetailPage() {
   }
 
   if (detail === undefined && !error) {
-    return <div className="page-subheading">正在加载实例详情…</div>
+    return <div className="page-subheading">正在加载实例详情...</div>
   }
 
   if (detail === null) {
@@ -127,20 +136,18 @@ export function InstanceDetailPage() {
             返回总览
           </Link>
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="page-heading">
-              {detail.alias || formatAccountIdentity(detail.account_name, detail.account_id)}
-            </h1>
+            <h1 className="page-heading">{detail.alias || formatAccountIdentity(detail.account_name, detail.account_id)}</h1>
             <HealthBadge status={detail.health_status} />
           </div>
           <p className="page-subheading">{formatAccountIdentity(detail.account_name, detail.account_id)}</p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => void load()}>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Button variant="outline" onClick={() => void load()} className="w-full sm:w-auto">
             <RefreshCcw className="size-4" />
             刷新
           </Button>
-          <Button variant="destructive" onClick={() => void deleteInstance()}>
+          <Button variant="destructive" onClick={() => void deleteInstance()} className="w-full sm:w-auto">
             <Trash2 className="size-4" />
             删除实例
           </Button>
@@ -149,64 +156,22 @@ export function InstanceDetailPage() {
 
       {error ? <div className="text-sm text-rose-600 dark:text-rose-300">{error}</div> : null}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <MetricValueCard title="当前总消耗" value={formatCurrency(detail.latest_current_spend)} />
-        <MetricValueCard title="窗口增量" value={formatCurrency(detail.latest_increase_amount)} />
+        <MetricValueCard title={`${windowMinutes} 分钟窗口增量`} value={formatCurrency(detail.latest_increase_amount)} />
         <MetricValueCard title="最近采样" value={formatDateTime(detail.last_capture_at)} />
       </section>
 
-      <section className="info-grid">
-        <InfoItem label="实例 ID" value={detail.instance_id} />
-        <InfoItem label="页面类型" value={detail.page_type || "-"} />
-        <InfoItem label="脚本版本" value={detail.script_version || "-"} />
-        <InfoItem label="采样状态" value={getCaptureStatusLabel(detail.last_capture_status)} />
-        <InfoItem label="最近心跳" value={formatDateTime(detail.last_heartbeat_at)} />
-        <InfoItem label="最近错误" value={compactText(detail.last_error, 80)} />
-        <InfoItem label="最近分析" value={compactText(detail.last_analysis_summary, 80)} />
-        <InfoItem label="最近行数" value={String(detail.last_row_count ?? "-")} />
-      </section>
-
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,1fr)]">
+      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
         <Card className="soft-panel">
           <CardHeader>
-            <CardTitle>采样趋势</CardTitle>
-            <CardDescription>绿色曲线表示当前总消耗，蓝色曲线表示窗口增量。</CardDescription>
-          </CardHeader>
-          <CardContent className="h-[320px] pt-2">
-            {chartData.length >= 2 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <CartesianGrid vertical={false} stroke="var(--color-border)" />
-                  <XAxis dataKey="label" tickLine={false} axisLine={false} />
-                  <YAxis tickLine={false} axisLine={false} />
-                  <Tooltip
-                    contentStyle={{
-                      borderRadius: 16,
-                      border: "1px solid var(--color-border)",
-                      background: "var(--color-card)",
-                    }}
-                  />
-                  <Line type="monotone" dataKey="currentSpend" name="当前总消耗" stroke="var(--color-chart-1)" strokeWidth={2.5} dot={false} />
-                  <Line type="monotone" dataKey="increaseAmount" name="窗口增量" stroke="var(--color-chart-2)" strokeWidth={2.5} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/80 text-sm text-muted-foreground">
-                采样点不足，暂时无法生成趋势图。
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="soft-panel">
-          <CardHeader>
-            <CardTitle>实例备注</CardTitle>
-            <CardDescription>别名和备注仅保存在后台监控系统中，不会同步到油猴脚本。</CardDescription>
+            <CardTitle>实例名称与备注</CardTitle>
+            <CardDescription>这里修改的别名和备注只保存在后台监控系统中，不会同步到油猴脚本。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground" htmlFor="instance-alias">
-                实例别名
+                实例名称
               </label>
               <Input
                 id="instance-alias"
@@ -217,27 +182,59 @@ export function InstanceDetailPage() {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground" htmlFor="instance-remarks">
-                实例备注
+                备注
               </label>
               <Textarea
                 id="instance-remarks"
                 value={form.remarks}
                 onChange={(event) => setForm((current) => ({ ...current, remarks: event.target.value }))}
-                placeholder="填写负责人、用途和补充说明。"
+                placeholder="填写负责人、用途、风险说明或其他补充信息"
               />
             </div>
             <Button onClick={() => void saveMeta()} disabled={saving}>
-              {saving ? "保存中…" : "保存备注"}
+              {saving ? "保存中..." : "保存名称与备注"}
             </Button>
           </CardContent>
         </Card>
+
+        <section className="info-grid">
+          <InfoItem label="实例 ID" value={detail.instance_id} />
+          <InfoItem label="页面类型" value={detail.page_type || "-"} />
+          <InfoItem label="脚本版本" value={detail.script_version || "-"} />
+          <InfoItem label="采样状态" value={getCaptureStatusLabel(detail.last_capture_status)} />
+          <InfoItem label="最近心跳" value={formatDateTime(detail.last_heartbeat_at)} />
+          <InfoItem label="最近错误" value={compactText(detail.last_error, 80)} />
+          <InfoItem label="最近分析" value={compactText(detail.last_analysis_summary, 80)} />
+          <InfoItem label="最近行数" value={String(detail.last_row_count ?? "-")} />
+        </section>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-2">
+        <TrendChartCard
+          title="今日总消耗金额"
+          description="查看当前实例当日累计消耗的采样趋势。"
+          data={chartData}
+          dataKey="currentSpend"
+          lineName="当前总消耗"
+          color="var(--color-chart-1)"
+          emptyText="采样点不足，暂时无法生成今日总消耗趋势图。"
+        />
+        <TrendChartCard
+          title={`${windowMinutes} 分钟窗口消耗监控`}
+          description="用于观察短周期波动，判断窗口期内是否出现异常抬升。"
+          data={chartData}
+          dataKey="increaseAmount"
+          lineName={`${windowMinutes} 分钟窗口增量`}
+          color="var(--color-chart-2)"
+          emptyText={`采样点不足，暂时无法生成 ${windowMinutes} 分钟窗口趋势图。`}
+        />
       </section>
 
       <section className="section-grid">
         <Card className="soft-panel">
           <CardHeader>
             <CardTitle>最近分析</CardTitle>
-            <CardDescription>优先查看最近的模型结论、风险等级和摘要。</CardDescription>
+            <CardDescription>优先查看最近的模型结论、风险级别和摘要。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {detail.recent_analyses.map((item) => (
@@ -263,7 +260,7 @@ export function InstanceDetailPage() {
         <Card className="soft-panel">
           <CardHeader>
             <CardTitle>最近告警</CardTitle>
-            <CardDescription>确认该实例是否真正触发并发出了通知。</CardDescription>
+            <CardDescription>确认这个实例是否真正触发并发出了通知。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {detail.recent_alerts.map((alert) => (
@@ -274,7 +271,7 @@ export function InstanceDetailPage() {
                   <AlertSeverityBadge severity={alert.severity} />
                 </div>
                 <div className="mt-2 text-sm text-muted-foreground">
-                  {alert.alert_kind} / {alert.channel || "-"} / {formatDateTime(alert.triggered_at)}
+                  {formatAlertKind(alert.alert_kind)} / {alert.channel || "-"} / {formatDateTime(alert.triggered_at)}
                 </div>
                 <div className="mt-2 text-sm leading-6 text-foreground">{compactText(alert.content_preview, 180)}</div>
               </div>
@@ -332,5 +329,55 @@ function InfoItem({ label, value }: { label: string; value: string }) {
       <div className="text-sm text-muted-foreground">{label}</div>
       <div className="mt-2 text-sm font-medium leading-6 text-foreground">{value}</div>
     </div>
+  )
+}
+
+function TrendChartCard({
+  title,
+  description,
+  data,
+  dataKey,
+  lineName,
+  color,
+  emptyText,
+}: {
+  title: string
+  description: string
+  data: Array<{ label: string; currentSpend: number; increaseAmount: number }>
+  dataKey: "currentSpend" | "increaseAmount"
+  lineName: string
+  color: string
+  emptyText: string
+}) {
+  return (
+    <Card className="soft-panel">
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="h-[300px] pt-2">
+        {data.length >= 2 ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data}>
+              <CartesianGrid vertical={false} stroke="var(--color-border)" />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} />
+              <YAxis tickLine={false} axisLine={false} />
+              <Tooltip
+                contentStyle={{
+                  borderRadius: 16,
+                  border: "1px solid var(--color-border)",
+                  background: "var(--color-card)",
+                }}
+              />
+              <Line type="monotone" dataKey={dataKey} name={lineName} stroke={color} strokeWidth={2.5} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/80 text-sm text-muted-foreground">
+            {emptyText}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }

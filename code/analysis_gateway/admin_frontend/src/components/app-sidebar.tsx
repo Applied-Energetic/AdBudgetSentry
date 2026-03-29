@@ -10,8 +10,8 @@ import type { AdminInstanceSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const navigationItems = [
-  { title: "Overview", href: "/admin", icon: LayoutDashboard, exact: true },
-  { title: "Alerts", href: "/admin/alerts", icon: AlertTriangle },
+  { title: "总览", href: "/admin", icon: LayoutDashboard, exact: true },
+  { title: "告警", href: "/admin/alerts", icon: AlertTriangle },
 ]
 
 export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
@@ -28,11 +28,11 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-[11px] font-semibold tracking-[0.22em] text-muted-foreground">ADBUDGET</div>
-            <div className="mt-1 text-lg font-semibold">Admin Console</div>
+            <div className="mt-1 text-lg font-semibold">监控后台</div>
           </div>
-          <Badge className="rounded-full bg-primary px-2.5 py-0.5 text-primary-foreground">v1</Badge>
+          <Badge className="rounded-full bg-primary px-2.5 py-0.5 text-primary-foreground">V1</Badge>
         </div>
-        <p className="mt-3 text-sm leading-6 text-muted-foreground">A clean control surface for monitoring instances, alerts, and spend anomalies.</p>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">统一查看实例健康度、账户消耗异常和告警投递状态。</p>
       </div>
 
       <nav className="space-y-1 px-3 pb-4">
@@ -59,11 +59,11 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="border-t border-sidebar-border px-5 pt-4">
-        <div className="mb-3 text-[11px] font-semibold tracking-[0.18em] text-muted-foreground">Priority instances</div>
+        <div className="mb-3 text-[11px] font-semibold tracking-[0.18em] text-muted-foreground">重点实例</div>
         <div className="space-y-2">
           {instances.length === 0 ? (
             <div className="rounded-2xl border border-sidebar-border/80 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
-              No instances yet
+              暂无实例
             </div>
           ) : null}
           {instances.map((instance) => {

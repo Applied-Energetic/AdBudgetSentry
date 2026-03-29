@@ -5,9 +5,9 @@ import { useTheme } from "@/lib/theme"
 import type { ThemeMode } from "@/lib/types"
 
 const options: Array<{ value: ThemeMode; label: string; icon: typeof LaptopMinimal }> = [
-  { value: "system", label: "System", icon: LaptopMinimal },
-  { value: "light", label: "Light", icon: SunMedium },
-  { value: "dark", label: "Dark", icon: MoonStar },
+  { value: "system", label: "跟随系统", icon: LaptopMinimal },
+  { value: "light", label: "浅色", icon: SunMedium },
+  { value: "dark", label: "深色", icon: MoonStar },
 ]
 
 export function ThemeToggle() {

@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, BarChart3, Server } from "lucide-react"
+import { Activity, AlertTriangle, BarChart3, PencilLine, Server } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
@@ -10,7 +10,13 @@ import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { adminApi } from "@/lib/api"
-import { compactText, formatAccountIdentity, formatDateTime } from "@/lib/format"
+import {
+  compactText,
+  formatAccountIdentity,
+  formatAlertKind,
+  formatDateTime,
+  getCaptureStatusLabel,
+} from "@/lib/format"
 import type { DashboardPayload } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -54,7 +60,7 @@ export function DashboardPage() {
   }, [data])
 
   if (!data && !error) {
-    return <div className="page-subheading">正在加载监控总览数据…</div>
+    return <div className="page-subheading">正在加载监控总览数据...</div>
   }
 
   if (error && !data) {
@@ -77,7 +83,7 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           title="在线实例"
           value={String(data.summary.total_instances)}
@@ -88,7 +94,7 @@ export function DashboardPage() {
         <MetricCard
           title="健康实例"
           value={String(data.summary.green_instances)}
-          hint={`${data.summary.yellow_instances} 个需要关注，${data.summary.red_instances} 个风险实例`}
+          hint={`${data.summary.yellow_instances} 个需关注，${data.summary.red_instances} 个风险实例`}
           icon={<Activity className="size-5" />}
           tone="green"
         />
@@ -112,9 +118,9 @@ export function DashboardPage() {
         <Card className="soft-panel">
           <CardHeader>
             <CardTitle>实例健康分布</CardTitle>
-            <CardDescription>按健康状态查看当前实例分布。</CardDescription>
+            <CardDescription>按实例健康状态查看当前整体分布。</CardDescription>
           </CardHeader>
-          <CardContent className="h-[280px] pt-2">
+          <CardContent className="h-[260px] pt-2 sm:h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={healthDistribution}>
                 <CartesianGrid vertical={false} stroke="var(--color-border)" />
@@ -137,9 +143,9 @@ export function DashboardPage() {
         <Card className="soft-panel">
           <CardHeader>
             <CardTitle>告警发送状态</CardTitle>
-            <CardDescription>基于最近告警记录统计发送结果。</CardDescription>
+            <CardDescription>基于最近告警记录统计投递结果。</CardDescription>
           </CardHeader>
-          <CardContent className="h-[280px] pt-2">
+          <CardContent className="h-[260px] pt-2 sm:h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={alertDistribution}>
                 <CartesianGrid vertical={false} stroke="var(--color-border)" />
@@ -162,62 +168,101 @@ export function DashboardPage() {
 
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
         <Card className="soft-panel">
-          <CardHeader className="flex flex-row items-center justify-between gap-4">
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <CardTitle>实例列表</CardTitle>
-              <CardDescription>按健康状态排序的重点监控目标。</CardDescription>
+              <CardTitle>实例监控</CardTitle>
+              <CardDescription>按健康状态排序的重点监控对象，可进入实例页修改名称和备注。</CardDescription>
             </div>
             <Button variant="outline" onClick={() => void load()}>
               刷新
             </Button>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>实例</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>最近心跳</TableHead>
-                  <TableHead>采样状态</TableHead>
-                  <TableHead>操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.instances.slice(0, 8).map((instance) => (
-                  <TableRow key={instance.instance_id}>
-                    <TableCell className="whitespace-normal">
+          <CardContent className="space-y-3">
+            <div className="space-y-3 md:hidden">
+              {data.instances.slice(0, 8).map((instance) => (
+                <div key={instance.instance_id} className="rounded-2xl border border-border/70 bg-background/90 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
                       <div className="font-medium">
                         {instance.alias || formatAccountIdentity(instance.account_name, instance.account_id)}
                       </div>
                       <div className="mt-1 text-sm text-muted-foreground">
-                        {compactText(instance.remarks || formatAccountIdentity(instance.account_name, instance.account_id), 60)}
+                        {compactText(instance.remarks || formatAccountIdentity(instance.account_name, instance.account_id), 56)}
                       </div>
-                    </TableCell>
-                    <TableCell>
-                      <HealthBadge status={instance.health_status} />
-                    </TableCell>
-                    <TableCell>{formatDateTime(instance.last_heartbeat_at)}</TableCell>
-                    <TableCell>{instance.last_capture_status || "-"}</TableCell>
-                    <TableCell>
-                      <Link
-                        to={`/admin/instances/${instance.instance_id}`}
-                        className={cn(buttonVariants({ variant: "outline", size: "sm" }), "rounded-full")}
-                      >
-                        查看
-                      </Link>
-                    </TableCell>
+                    </div>
+                    <HealthBadge status={instance.health_status} />
+                  </div>
+                  <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+                    <div>最近心跳：{formatDateTime(instance.last_heartbeat_at)}</div>
+                    <div>采样状态：{getCaptureStatusLabel(instance.last_capture_status)}</div>
+                  </div>
+                  <div className="mt-4 flex gap-2">
+                    <Link
+                      to={`/admin/instances/${instance.instance_id}`}
+                      className={cn(buttonVariants({ variant: "default", size: "sm" }), "flex-1 rounded-full")}
+                    >
+                      查看详情
+                    </Link>
+                    <Link
+                      to={`/admin/instances/${instance.instance_id}`}
+                      className={cn(buttonVariants({ variant: "outline", size: "sm" }), "rounded-full")}
+                    >
+                      <PencilLine className="size-4" />
+                      备注
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>实例</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>最近心跳</TableHead>
+                    <TableHead>采样状态</TableHead>
+                    <TableHead>操作</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {data.instances.slice(0, 8).map((instance) => (
+                    <TableRow key={instance.instance_id}>
+                      <TableCell className="whitespace-normal">
+                        <div className="font-medium">
+                          {instance.alias || formatAccountIdentity(instance.account_name, instance.account_id)}
+                        </div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {compactText(instance.remarks || formatAccountIdentity(instance.account_name, instance.account_id), 60)}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <HealthBadge status={instance.health_status} />
+                      </TableCell>
+                      <TableCell>{formatDateTime(instance.last_heartbeat_at)}</TableCell>
+                      <TableCell>{getCaptureStatusLabel(instance.last_capture_status)}</TableCell>
+                      <TableCell>
+                        <Link
+                          to={`/admin/instances/${instance.instance_id}`}
+                          className={cn(buttonVariants({ variant: "outline", size: "sm" }), "rounded-full")}
+                        >
+                          查看详情
+                        </Link>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
 
         <Card className="soft-panel">
-          <CardHeader className="flex flex-row items-center justify-between gap-4">
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <CardTitle>告警列表</CardTitle>
-              <CardDescription>最近的告警投递记录。</CardDescription>
+              <CardTitle>最新告警</CardTitle>
+              <CardDescription>最近产生的告警与投递状态。</CardDescription>
             </div>
             <Link to="/admin/alerts" className={buttonVariants({ variant: "outline", size: "sm" })}>
               查看全部
@@ -234,7 +279,7 @@ export function DashboardPage() {
                   {formatAccountIdentity(alert.account_name, alert.account_id)}
                 </div>
                 <div className="mt-1 text-sm text-muted-foreground">
-                  {alert.alert_kind} / {formatDateTime(alert.triggered_at)}
+                  {formatAlertKind(alert.alert_kind)} / {formatDateTime(alert.triggered_at)}
                 </div>
                 <div className="mt-2 text-sm leading-6 text-foreground">{compactText(alert.content_preview, 100)}</div>
               </div>
