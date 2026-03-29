@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import html
+import mimetypes
 import io
 import json
 import os
@@ -11,11 +12,12 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from admin_ui import build_admin_dashboard_html, build_alerts_page_html, build_instance_detail_html
 from anomaly import detect_spend_anomaly
 from database import (
+    delete_instance_records,
     ensure_database,
     fetch_admin_alerts,
     fetch_admin_instances,
@@ -31,6 +33,7 @@ from database import (
     save_ingest_event,
     save_analysis_summary,
     utc_now_ms,
+    update_instance_metadata,
 )
 from models import (
     AdminAlertRecord,
@@ -46,8 +49,10 @@ from models import (
     ErrorReportRequest,
     HistoryPoint,
     HeartbeatRequest,
+    InstanceMetadataResponse,
     IngestRequest,
     TestAlertRequest,
+    UpdateInstanceMetadataRequest,
 )
 from providers import OpenAICompatibleProvider, ProviderResult
 
@@ -58,6 +63,8 @@ DATA_DIR = ROOT_DIR / "data"
 DEFAULT_DB_PATH = DATA_DIR / "app.db"
 CONFIG_PATH = APP_DIR / "config.json"
 EXAMPLE_CONFIG_PATH = APP_DIR / "config.example.json"
+ADMIN_FRONTEND_DIR = APP_DIR / "admin_frontend"
+ADMIN_FRONTEND_DIST_DIR = ADMIN_FRONTEND_DIR / "dist"
 
 DEFAULT_CONTEXT = """业务背景：快手磁力金牛在高客单价、目标成本偏高时，可能引入低质量流量，造成虚假转化、疯狂消耗、成本失控。请区分正常爆量与低质流量嫌疑，输出风险等级、证据和操作建议。"""
 MODEL_TRIGGER_TYPES = {"threshold_breach", "surge", "stalled"}
@@ -897,6 +904,21 @@ async def run_provider(provider: OpenAICompatibleProvider, prompt: str) -> Provi
     return await provider.complete(prompt)
 
 
+def get_admin_frontend_dist_dir() -> Path:
+    return ADMIN_FRONTEND_DIST_DIR
+
+
+def get_admin_frontend_index_path() -> Path:
+    return get_admin_frontend_dist_dir() / "index.html"
+
+
+def render_admin_frontend_index() -> HTMLResponse | None:
+    index_path = get_admin_frontend_index_path()
+    if not index_path.is_file():
+        return None
+    return HTMLResponse(index_path.read_text(encoding="utf-8"))
+
+
 app = FastAPI(title="AdBudgetSentry Analysis Gateway")
 
 
@@ -1089,6 +1111,29 @@ def admin_instance_detail_api(instance_id: str) -> AdminInstanceDetail:
     return AdminInstanceDetail(**detail)
 
 
+@app.post("/admin/api/instances/{instance_id}/meta", response_model=InstanceMetadataResponse)
+def admin_update_instance_metadata(
+    instance_id: str,
+    request: UpdateInstanceMetadataRequest,
+) -> InstanceMetadataResponse:
+    result = update_instance_metadata(
+        get_db_path(),
+        instance_id,
+        alias=request.alias,
+        remarks=request.remarks,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    return InstanceMetadataResponse(**result)
+
+
+@app.delete("/admin/api/instances/{instance_id}", response_model=ApiAck)
+def admin_delete_instance(instance_id: str) -> ApiAck:
+    if not delete_instance_records(get_db_path(), instance_id):
+        raise HTTPException(status_code=404, detail="Instance not found")
+    return ApiAck(ok=True, message="deleted", server_time=utc_now_ms())
+
+
 @app.get("/admin/api/instances/{instance_id}/history", response_model=list[AdminCaptureHistoryPoint])
 def admin_instance_history_api(instance_id: str, limit: int = 120) -> list[AdminCaptureHistoryPoint]:
     safe_limit = max(1, min(limit, 500))
@@ -1100,8 +1145,20 @@ def admin_instance_history_api(instance_id: str, limit: int = 120) -> list[Admin
 
 
 @app.get("/", response_class=HTMLResponse)
+def home() -> HTMLResponse:
+    db_path = get_db_path()
+    summary = fetch_admin_summary(db_path)
+    instances = fetch_admin_instances(db_path)
+    alerts = fetch_admin_alerts(db_path, limit=20)
+    return HTMLResponse(build_admin_dashboard_html(summary, instances, alerts, db_path))
+
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_home() -> HTMLResponse:
+    spa_response = render_admin_frontend_index()
+    if spa_response is not None:
+        return spa_response
+
     db_path = get_db_path()
     summary = fetch_admin_summary(db_path)
     instances = fetch_admin_instances(db_path)
@@ -1117,6 +1174,10 @@ def admin_alerts_page(
     date_from: str = "",
     date_to: str = "",
 ) -> HTMLResponse:
+    spa_response = render_admin_frontend_index()
+    if spa_response is not None:
+        return spa_response
+
     db_path = get_db_path()
     normalized_alert_kind = normalize_alert_kind(alert_kind)
     alerts = fetch_admin_alerts(
@@ -1143,11 +1204,35 @@ def admin_alerts_page(
 
 @app.get("/admin/instances/{instance_id}", response_class=HTMLResponse)
 def admin_instance_detail_page(instance_id: str) -> HTMLResponse:
+    spa_response = render_admin_frontend_index()
+    if spa_response is not None:
+        return spa_response
+
     db_path = get_db_path()
     detail = fetch_instance_detail(db_path, instance_id)
     if not detail:
         raise HTTPException(status_code=404, detail="Instance not found")
     return HTMLResponse(build_instance_detail_html(detail, db_path))
+
+
+@app.get("/{path:path}")
+def admin_frontend_asset(path: str) -> Response:
+    dist_dir = get_admin_frontend_dist_dir()
+    if not dist_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Static assets not available")
+
+    resolved_dist = dist_dir.resolve()
+    candidate = (dist_dir / path).resolve()
+    try:
+        candidate.relative_to(resolved_dist)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Static asset not found")
+
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Static asset not found")
+
+    media_type, _ = mimetypes.guess_type(candidate.name)
+    return FileResponse(candidate, media_type=media_type or "application/octet-stream")
 
 
 @app.post("/analyze", response_model=AnalysisResponse)
