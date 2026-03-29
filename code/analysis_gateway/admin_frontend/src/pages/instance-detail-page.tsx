@@ -20,7 +20,7 @@ import {
   formatShortTime,
   getCaptureStatusLabel,
 } from "@/lib/format"
-import type { AdminInstanceDetail } from "@/lib/types"
+import type { AdminCaptureHistoryPoint, AdminInstanceDetail } from "@/lib/types"
 
 const HISTORY_WINDOW_MS = 12 * 60 * 60 * 1000
 
@@ -28,6 +28,7 @@ export function InstanceDetailPage() {
   const navigate = useNavigate()
   const { instanceId = "" } = useParams()
   const [detail, setDetail] = useState<AdminInstanceDetail | null | undefined>(undefined)
+  const [history, setHistory] = useState<AdminCaptureHistoryPoint[]>([])
   const [form, setForm] = useState({ alias: "", remarks: "" })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -35,12 +36,16 @@ export function InstanceDetailPage() {
   const load = async () => {
     try {
       setError(null)
-      const result = await adminApi.getInstanceDetail(instanceId)
-      setDetail(result)
-      if (result) {
+      const [detailResult, historyResult] = await Promise.all([
+        adminApi.getInstanceDetail(instanceId),
+        adminApi.getInstanceHistory(instanceId, 500).catch(() => []),
+      ])
+      setDetail(detailResult)
+      setHistory(historyResult)
+      if (detailResult) {
         setForm({
-          alias: result.alias || "",
-          remarks: result.remarks || "",
+          alias: detailResult.alias || "",
+          remarks: detailResult.remarks || "",
         })
       }
     } catch (loadError) {
@@ -53,13 +58,12 @@ export function InstanceDetailPage() {
   }, [instanceId])
 
   const historyPoints = useMemo(() => {
-    if (!detail) return []
-    const sorted = [...detail.capture_history].sort((left, right) => left.captured_at - right.captured_at)
-    const latestTimestamp = sorted.at(-1)?.captured_at
-    if (!latestTimestamp) return []
-    const threshold = latestTimestamp - HISTORY_WINDOW_MS
-    return sorted.filter((item) => item.captured_at >= threshold)
-  }, [detail])
+    const now = Date.now()
+    const threshold = now - HISTORY_WINDOW_MS
+    return [...history]
+      .sort((left, right) => left.captured_at - right.captured_at)
+      .filter((item) => item.captured_at >= threshold)
+  }, [history])
 
   const currentSpendChartData = useMemo<TrendChartPoint[]>(
     () =>
@@ -83,11 +87,11 @@ export function InstanceDetailPage() {
 
   const windowMinutes = useMemo(() => {
     if (!detail) return 10
-    const latestWithWindow = [...detail.capture_history]
+    const latestWithWindow = [...history]
       .sort((left, right) => right.captured_at - left.captured_at)
       .find((item) => item.compare_interval_min)
     return latestWithWindow?.compare_interval_min ?? 10
-  }, [detail])
+  }, [detail, history])
 
   const saveMeta = async () => {
     try {
@@ -233,18 +237,18 @@ export function InstanceDetailPage() {
       <section className="grid gap-6 xl:grid-cols-2">
         <TrendChartCard
           title="今日总消耗金额"
-          description="默认展示最近 12 小时采样走势，支持手机端全屏查看。"
+          description="默认展示从当前时间往回最近 12 小时，支持手机端全屏查看。"
           data={currentSpendChartData}
           color="var(--color-chart-1)"
-          emptyText="最近 12 小时内采样点不足，暂时无法生成今日总消耗趋势图。"
+          emptyText="当前时间往回最近 12 小时内采样点不足，暂时无法生成今日总消耗趋势图。"
           valueLabel="元"
         />
         <TrendChartCard
           title={`${windowMinutes} 分钟窗口消耗监控`}
-          description="默认展示最近 12 小时窗口波动，用于观察短周期异常抬升。"
+          description="默认展示从当前时间往回最近 12 小时窗口波动，用于观察短周期异常抬升。"
           data={increaseAmountChartData}
           color="var(--color-chart-2)"
-          emptyText={`最近 12 小时内采样点不足，暂时无法生成 ${windowMinutes} 分钟窗口趋势图。`}
+          emptyText={`当前时间往回最近 12 小时内采样点不足，暂时无法生成 ${windowMinutes} 分钟窗口趋势图。`}
           valueLabel="元"
         />
       </section>

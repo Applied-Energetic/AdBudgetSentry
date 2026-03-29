@@ -110,12 +110,7 @@ function TrendChartCanvas({
         </defs>
         <CartesianGrid vertical={false} stroke="var(--color-border)" strokeDasharray="3 3" />
         <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={10} minTickGap={24} />
-        <YAxis
-          tickLine={false}
-          axisLine={false}
-          width={62}
-          tickFormatter={(value: number) => formatDecimal(value)}
-        />
+        <YAxis tickLine={false} axisLine={false} width={62} tickFormatter={(value: number) => formatDecimal(value)} />
         <Tooltip
           formatter={(value) => [`${formatDecimal(Number(value))} ${valueLabel}`, valueLabel]}
           labelFormatter={(label) => `时间：${String(label ?? "-")}`}

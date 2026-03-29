@@ -1,5 +1,6 @@
 import type {
   AdminAlertRecord,
+  AdminCaptureHistoryPoint,
   AdminInstanceDetail,
   AdminInstanceSummary,
   AdminSummary,
@@ -78,6 +79,12 @@ export const adminApi = {
     }
 
     return (await response.json()) as AdminInstanceDetail
+  },
+
+  async getInstanceHistory(instanceId: string, limit = 500): Promise<AdminCaptureHistoryPoint[]> {
+    return fetchJson<AdminCaptureHistoryPoint[]>(
+      `/admin/api/instances/${encodeURIComponent(instanceId)}/history?limit=${Math.max(1, Math.min(limit, 500))}`,
+    )
   },
 
   async updateInstanceMeta(instanceId: string, payload: { alias: string; remarks: string }) {
