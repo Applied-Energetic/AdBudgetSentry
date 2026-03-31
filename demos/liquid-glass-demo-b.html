@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Liquid Glass Demo B</title>
+  <style>
+    :root {
+      --bg-1: #081421;
+      --bg-2: #102033;
+      --bg-3: #16314e;
+      --glass: rgba(255, 255, 255, 0.1);
+      --glass-soft: rgba(255, 255, 255, 0.08);
+      --line: rgba(232, 243, 255, 0.18);
+      --ink: #eff7ff;
+      --muted: rgba(232, 243, 255, 0.68);
+      --cyan: #8fe4ff;
+      --teal: #96f0d4;
+      --violet: #c5c8ff;
+      --rose: #ffb7d2;
+      --shadow: 0 24px 90px rgba(0, 0, 0, 0.28);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 10% 10%, rgba(143, 228, 255, 0.14), transparent 24%),
+        radial-gradient(circle at 85% 15%, rgba(197, 200, 255, 0.16), transparent 20%),
+        radial-gradient(circle at 70% 80%, rgba(150, 240, 212, 0.14), transparent 22%),
+        linear-gradient(155deg, var(--bg-1), var(--bg-2) 45%, var(--bg-3));
+    }
+
+    .shell {
+      width: min(1360px, calc(100vw - 32px));
+      margin: 18px auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .glass {
+      background: linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.06));
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(26px) saturate(155%);
+      -webkit-backdrop-filter: blur(26px) saturate(155%);
+    }
+
+    .hero {
+      padding: 24px;
+      border-radius: 34px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before,
+    .hero::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(8px);
+      pointer-events: none;
+    }
+
+    .hero::before {
+      width: 360px;
+      height: 360px;
+      left: -120px;
+      top: -120px;
+      background: radial-gradient(circle, rgba(143, 228, 255, 0.18), transparent 72%);
+    }
+
+    .hero::after {
+      width: 420px;
+      height: 420px;
+      right: -120px;
+      bottom: -180px;
+      background: radial-gradient(circle, rgba(197, 200, 255, 0.18), transparent 74%);
+    }
+
+    .hero-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) 420px;
+      gap: 18px;
+      align-items: end;
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    h1 {
+      margin: 12px 0 10px;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 0.98;
+      letter-spacing: -0.03em;
+    }
+
+    .hero p {
+      max-width: 720px;
+      margin: 0;
+      line-height: 1.8;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .hero-tags,
+    .summary-grid,
+    .flow,
+    .control-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .badge,
+    .action {
+      min-height: 40px;
+      padding: 0 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(238, 245, 255, 0.16);
+      display: inline-flex;
+      align-items: center;
+      background: rgba(255,255,255,0.08);
+      font-size: 13px;
+    }
+
+    .action {
+      background: linear-gradient(135deg, rgba(143, 228, 255, 0.18), rgba(150, 240, 212, 0.08));
+    }
+
+    .side-stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .side-card {
+      padding: 18px;
+      border-radius: 24px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(236, 244, 255, 0.18);
+    }
+
+    .side-card strong {
+      display: block;
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .side-card .big {
+      font-size: 28px;
+      font-weight: 800;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .metric {
+      padding: 18px;
+      border-radius: 24px;
+    }
+
+    .metric small {
+      display: block;
+      color: var(--muted);
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+
+    .metric strong {
+      font-size: 32px;
+      font-weight: 800;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    .sidebar,
+    .content {
+      padding: 20px;
+      border-radius: 28px;
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 21px;
+    }
+
+    .section-sub {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .menu {
+      margin-top: 16px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .menu-item {
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(236, 244, 255, 0.14);
+    }
+
+    .menu-item.active {
+      background: linear-gradient(135deg, rgba(143, 228, 255, 0.18), rgba(197, 200, 255, 0.12));
+      border-color: rgba(143, 228, 255, 0.22);
+    }
+
+    .menu-item b {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+
+    .menu-item span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .cards {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      padding: 18px;
+      border-radius: 24px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(236, 244, 255, 0.14);
+    }
+
+    .card .tiny {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+
+    .card .big {
+      margin-top: 10px;
+      font-size: 34px;
+      font-weight: 800;
+    }
+
+    .feed {
+      margin-top: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .feed-item {
+      padding: 16px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(236, 244, 255, 0.14);
+    }
+
+    .feed-item strong {
+      display: block;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 6px;
+    }
+
+    .feed-item span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1100px) {
+      .hero-grid,
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 700px) {
+      .shell {
+        width: min(100vw - 20px, 100%);
+        margin: 10px auto 20px;
+      }
+
+      .hero,
+      .sidebar,
+      .content {
+        padding: 16px;
+        border-radius: 24px;
+      }
+
+      .metrics,
+      .cards {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero glass">
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow">Demo B / Aurora Deck</div>
+          <h1>Liquid Glass<br />玻璃航站台</h1>
+          <p>同样是科技感，但更柔和、更均匀，像“浮在雾面玻璃上的信息层”。比 Demo A 少一点压迫感，更偏高级产品感和未来控制台，而不是强烈作战室。</p>
+          <div class="hero-tags" style="margin-top:18px;">
+            <div class="badge">soft glass</div>
+            <div class="badge">aurora light</div>
+            <div class="badge">premium control</div>
+          </div>
+          <div class="control-row" style="margin-top:18px;">
+            <div class="action">theme auto</div>
+            <div class="action">touch-safe cards</div>
+            <div class="action">manual refresh</div>
+          </div>
+        </div>
+        <div class="side-stack">
+          <div class="side-card">
+            <strong>dashboard state</strong>
+            <div class="big">liquid / calm / premium</div>
+          </div>
+          <div class="side-card">
+            <strong>core promise</strong>
+            <div class="big">risk first, noise later</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="metrics">
+      <div class="metric glass"><small>online</small><strong style="color:var(--cyan);">27</strong></div>
+      <div class="metric glass"><small>red</small><strong style="color:var(--rose);">4</strong></div>
+      <div class="metric glass"><small>yellow</small><strong style="color:#ffd89d;">9</strong></div>
+      <div class="metric glass"><small>green</small><strong style="color:var(--teal);">14</strong></div>
+    </section>
+
+    <section class="layout">
+      <aside class="sidebar glass">
+        <h2 class="section-title">Navigation</h2>
+        <p class="section-sub">把科技感更多放在框架和层次，而不是每一张卡片都发光。</p>
+        <div class="menu">
+          <div class="menu-item active">
+            <b>Instance Health</b>
+            <span>risk ordered cards with glass grouping</span>
+          </div>
+          <div class="menu-item">
+            <b>Alerts</b>
+            <span>filter, export, and recent feed</span>
+          </div>
+          <div class="menu-item">
+            <b>Detail</b>
+            <span>total spend and delta spotlight cards</span>
+          </div>
+          <div class="menu-item">
+            <b>Metadata</b>
+            <span>alias, remark, delete instance</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="content glass">
+        <h2 class="section-title">Main Surface</h2>
+        <p class="section-sub">重点放在“玻璃分区”和“柔性漂浮层”，整体更像一块高端系统面板。</p>
+
+        <div class="cards">
+          <article class="card">
+            <div class="tiny">spotlight</div>
+            <div class="big" style="color:var(--cyan);">12,820</div>
+            <div style="margin-top:8px;color:var(--muted);font-size:13px;">current total spend</div>
+          </article>
+
+          <article class="card">
+            <div class="tiny">window delta</div>
+            <div class="big" style="color:var(--teal);">+3,420</div>
+            <div style="margin-top:8px;color:var(--muted);font-size:13px;">30 minute increase</div>
+          </article>
+        </div>
+
+        <div class="feed">
+          <div class="feed-item">
+            <strong>Main Budget Alpha / RED / heartbeat 1m ago</strong>
+            <span>remark: high-spend account, needs manual watch after 12:00 traffic surge</span>
+          </div>
+          <div class="feed-item">
+            <strong>Studio Feed Beta / YELLOW / capture 7m ago</strong>
+            <span>remark: conversion quality uncertain, touch card opens detail, right-side actions stay separate</span>
+          </div>
+          <div class="feed-item">
+            <strong>Warm Pool Gamma / GREEN / stable</strong>
+            <span>remark: testing lane, low noise, should feel visually quieter than risky instances</span>
+          </div>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

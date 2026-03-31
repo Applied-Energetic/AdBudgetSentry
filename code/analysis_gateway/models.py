@@ -136,8 +136,21 @@ class ApiAck(BaseModel):
     next_suggested_interval_sec: int | None = None
 
 
+class UpdateInstanceMetadataRequest(BaseModel):
+    alias: str | None = None
+    remarks: str | None = None
+
+
+class InstanceMetadataResponse(BaseModel):
+    instance_id: str
+    alias: str | None = None
+    remarks: str | None = None
+
+
 class AdminInstanceSummary(BaseModel):
     instance_id: str
+    alias: str | None = None
+    remarks: str | None = None
     account_id: str | None = None
     account_name: str | None = None
     page_type: str | None = None
@@ -225,6 +238,8 @@ class AdminAnalysisRecord(BaseModel):
 
 
 class AdminInstanceDetail(AdminInstanceSummary):
+    latest_current_spend: float | None = None
+    latest_increase_amount: float | None = None
     recent_errors: list[AdminErrorRecord] = Field(default_factory=list)
     recent_alerts: list[AdminAlertRecord] = Field(default_factory=list)
     recent_analyses: list[AdminAnalysisRecord] = Field(default_factory=list)

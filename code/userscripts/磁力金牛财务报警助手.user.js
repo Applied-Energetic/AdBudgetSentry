@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         磁力金牛财务报警助手
+// @name         AdBudgetSentry Panel
 // @namespace    http://tampermonkey.net/
-// @version      2.4.0
-// @description  监控磁力金牛财务页消耗，并由本地后端统一负责分析与告警
+// @version      2.6.1
+// @description  Floating finance monitor panel with capture, alert, AI analysis, settings, and theme switch
 // @author       Codex
 // @match        https://niu.e.kuaishou.com/financial/record*
 // @match        https://niu.e.kuaishou.com/*
@@ -18,1075 +18,163 @@
 (function () {
 	"use strict";
 
-	const CONFIG = {
-		panelId: "ad-budget-sentry-panel",
-		historyRetentionMs: 24 * 60 * 60 * 1000,
-		checkDelayMs: 3000,
-		uiTickMs: 1000,
-		sampleIntervalMs: 60 * 1000,
-		heartbeatIntervalMs: 2 * 60 * 1000,
-		scrapeRetryCount: 10,
-		scrapeRetryDelayMs: 1500,
-		defaultBackendBaseUrl: "http://127.0.0.1:8787",
-		audioAlertUrl:
-			"https://actions.google.com/sounds/v1/alarms/alarm_clock_short.ogg",
-	};
-
-	function normalizeBackendBaseUrl(raw) {
-		const fallback = CONFIG.defaultBackendBaseUrl;
-		const value = String(raw || fallback).trim();
-		if (!value) return fallback;
-		return value.replace(/\/analyze$/i, "").replace(/\/$/, "");
-	}
-
-	function makeInstanceId() {
-		return `tm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-	}
+	const C = { id: "ad-budget-sentry-panel", keepMs: 864e5, checkDelay: 3000, uiTick: 1000, sampleMs: 6e4, heartbeatMs: 12e4, retryCount: 10, retryDelay: 1500, backend: "http://127.0.0.1:8787" };
+	const K = { i: "instance_id", l: "panel_left", t: "panel_top", cs: "current_spend", inc: "increase_in_window", bs: "baseline_spend", bt: "baseline_time", lc: "last_check_time", la: "last_eval", lr: "last_reload_time", lt: "last_analysis_text", lm: "last_backend_message", lh: "last_heartbeat_sent_at", st: "last_capture_status", le: "last_error_message", h: "spend_history", aid: "account_id_override", anm: "account_name_override", ri: "refresh_interval_min", ci: "compare_interval_min", th: "notify_threshold", ae: "ai_enabled", ap: "ai_provider", bu: "backend_base_url", au: "analysis_gateway_url", theme: "ui_theme_mode" };
+	const THEMES = ["system", "light", "dark"];
+	const getVal = (k, d) => { const v = GM_getValue(k, d); return v === undefined || v === null ? d : v; };
+	const setVal = (k, v) => GM_setValue(k, v);
+	const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+	const fmtMoney = (v) => `${Number(v || 0).toFixed(2)} CNY`;
+	const backendBase = (v) => String(v || C.backend).trim().replace(/\/analyze$/i, "").replace(/\/$/, "") || C.backend;
 
 	const state = {
-		instanceId: GM_getValue("instance_id", makeInstanceId()),
-		panelPosition: {
-			left: GM_getValue("panel_left", null),
-			top: GM_getValue("panel_top", null),
-		},
-		currentSpend: GM_getValue("current_spend", 0),
-		increaseInWindow: GM_getValue("increase_in_window", 0),
-		baselineSpend: GM_getValue("baseline_spend", 0),
-		baselineTime: GM_getValue("baseline_time", 0),
-		lastCheckTime: GM_getValue("last_check_time", 0),
-		lastEvaluateAttemptAt: GM_getValue("last_evaluate_attempt_at", 0),
-		lastReloadTime: GM_getValue("last_reload_time", Date.now()),
-		lastAnalysisText: GM_getValue("last_analysis_text", ""),
-		lastBackendMessage: GM_getValue("last_backend_message", "等待上报"),
-		lastHeartbeatSentAt: GM_getValue("last_heartbeat_sent_at", 0),
-		lastCaptureStatus: GM_getValue("last_capture_status", "warning"),
-		lastErrorMessage: GM_getValue("last_error_message", ""),
-		history: GM_getValue("spend_history", []),
-		isEvaluating: false,
-		config: {
-			accountIdOverride: GM_getValue("account_id_override", ""),
-			accountNameOverride: GM_getValue("account_name_override", ""),
-			refreshIntervalMin: GM_getValue("refresh_interval_min", 5),
-			compareIntervalMin: GM_getValue("compare_interval_min", 30),
-			notifyThreshold: GM_getValue("notify_threshold", 1000),
-			aiEnabled: GM_getValue("ai_enabled", true),
-			aiProvider: GM_getValue("ai_provider", "deepseek"),
-			backendBaseUrl: normalizeBackendBaseUrl(
-				GM_getValue(
-					"backend_base_url",
-					GM_getValue(
-						"analysis_gateway_url",
-						CONFIG.defaultBackendBaseUrl,
-					),
-				),
-			),
+		id: String(getVal(K.i, `tm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`)),
+		pos: { left: getVal(K.l, null), top: getVal(K.t, null) },
+		current: Number(getVal(K.cs, 0)) || 0,
+		increase: Number(getVal(K.inc, 0)) || 0,
+		base: Number(getVal(K.bs, 0)) || 0,
+		baseTime: Number(getVal(K.bt, 0)) || 0,
+		lastCheck: Number(getVal(K.lc, 0)) || 0,
+		lastEval: Number(getVal(K.la, 0)) || 0,
+		lastReload: Number(getVal(K.lr, Date.now())) || Date.now(),
+		lastAnalysis: String(getVal(K.lt, "")),
+		lastBackend: String(getVal(K.lm, "Backend idle")),
+		lastHeartbeat: Number(getVal(K.lh, 0)) || 0,
+		lastStatus: String(getVal(K.st, "warning")),
+		lastError: String(getVal(K.le, "")),
+		history: Array.isArray(getVal(K.h, [])) ? getVal(K.h, []) : [],
+		theme: THEMES.includes(String(getVal(K.theme, "system"))) ? String(getVal(K.theme, "system")) : "system",
+		evaluating: false,
+		cfg: {
+			accountId: String(getVal(K.aid, "")),
+			accountName: String(getVal(K.anm, "")),
+			refresh: Number(getVal(K.ri, 5)) || 5,
+			compare: Number(getVal(K.ci, 30)) || 30,
+			threshold: Number(getVal(K.th, 1000)) || 1000,
+			aiEnabled: getVal(K.ae, true) !== false,
+			aiProvider: String(getVal(K.ap, "deepseek")),
+			backend: backendBase(getVal(K.bu, getVal(K.au, C.backend))),
 		},
 	};
+	setVal(K.i, state.id);
 
-	GM_setValue("instance_id", state.instanceId);
+	const ui = { panel: null, dragging: false, ox: 0, oy: 0 };
+	const qs = (sel) => (ui.panel ? ui.panel.querySelector(sel) : null);
+	const put = (sel, text) => { const el = qs(sel); if (el) el.textContent = text; };
+
+	const pageType = () => location.pathname.includes("/financial/record") ? "financial" : location.pathname.includes("/manage") ? "manage" : location.pathname.includes("/superManage") ? "super-manage" : "unknown";
+	function accountId() { if (state.cfg.accountId) return state.cfg.accountId; const q = new URLSearchParams(location.search); for (const k of ["accountId", "account_id", "advertiserId", "advertiser_id", "cid"]) { const v = q.get(k); if (v) return v; } return "unknown-account"; }
+	function accountName() { if (state.cfg.accountName) return state.cfg.accountName; for (const s of [".account-info-name", ".account-name", "[class*='Account'] [class*='name']", "header [class*='name']"]) { const el = document.querySelector(s); const txt = el ? el.textContent.trim() : ""; if (txt) return txt; } return document.title || "Unknown account"; }
+	function rows() { for (const s of ["#root section section main table tbody tr", ".ant-table-tbody tr.ant-table-row", ".ant-table-row"]) { const els = document.querySelectorAll(s); if (els.length) return els; } return []; }
+	function scrapeSpend() { const d = new Date(); const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; for (const row of rows()) { const cells = row.querySelectorAll("td"); if (cells.length < 2) continue; const txt = cells[0].textContent.trim(); if (txt === ds || txt.includes(ds)) return parseFloat(String(cells[1].textContent).replace(/[^\d.-]/g, "")) || 0; } return -1; }
+	async function scrapeSpendRetry() { let spend = -1; for (let i = 0; i < C.retryCount; i += 1) { spend = scrapeSpend(); if (spend >= 0) return spend; if (i < C.retryCount - 1) await sleep(C.retryDelay); } return spend; }
+	function ctx() { return { instance_id: state.id, account_id: accountId(), account_name: accountName(), page_type: pageType(), page_url: location.href, script_version: (typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "unknown", row_count: rows().length }; }
+	function request(url, body) { return new Promise((resolve, reject) => GM_xmlhttpRequest({ method: "POST", url, headers: { "Content-Type": "application/json" }, data: JSON.stringify(body), timeout: 45000, onload: resolve, onerror: reject, ontimeout: reject })); }
+	function trimHistory() { const now = Date.now(); state.history = state.history.filter((x) => now - x.time <= C.keepMs); }
+	function pushHistory(spend) { const now = Date.now(); const last = state.history[state.history.length - 1]; if (!last || Math.abs(last.spend - spend) > 0.009 || now - last.time >= 55e3) state.history.push({ time: now, spend }); trimHistory(); setVal(K.h, state.history); }
+	function baseline() { const start = Date.now() - state.cfg.compare * 6e4; const fallback = state.history[0] || { time: Date.now(), spend: state.current }; let before = null; let after = null; for (const item of state.history) { if (item.time <= start) before = item; else if (!after) after = item; } return before || after || fallback; }
+	function persist() { setVal(K.cs, state.current); setVal(K.inc, state.increase); setVal(K.bs, state.base); setVal(K.bt, state.baseTime); setVal(K.lc, state.lastCheck); setVal(K.la, state.lastEval); setVal(K.lr, state.lastReload); setVal(K.lh, state.lastHeartbeat); setVal(K.st, state.lastStatus); setVal(K.le, state.lastError); setVal(K.lm, state.lastBackend); }
+	function effectiveTheme() { return state.theme === "system" ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : state.theme; }
 
 	function addStyles() {
-		GM_addStyle(`
-            #${CONFIG.panelId} {
-                position: fixed;
-                top: 18px;
-                right: 18px;
-                z-index: 99999;
-                width: 320px;
-                background: #ffffff;
-                color: #1e293b;
-                border: 1px solid #cbd5e1;
-                border-radius: 8px;
-                box-shadow: 0 10px 25px rgba(15, 23, 42, 0.15);
-                font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
-                overflow: hidden;
-                display: flex;
-                flex-direction: column;
-                max-height: 90vh;
-            }
-            #${CONFIG.panelId} .sentry-head {
-                background: #0f172a;
-                color: #f8fafc;
-                padding: 10px 14px;
-                font-size: 13px;
-                font-weight: 600;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                cursor: move;
-                user-select: none;
-            }
-            #${CONFIG.panelId} .sentry-head-right {
-                display: flex;
-                gap: 10px;
-                align-items: center;
-                font-size: 12px;
-                color: #94a3b8;
-                font-weight: normal;
-            }
-            #${CONFIG.panelId} .sentry-body {
-                padding: 14px;
-                overflow-y: auto;
-                flex: 1;
-            }
-            #${CONFIG.panelId} .sentry-section-label {
-                font-size: 12px;
-                font-weight: 600;
-                color: #475569;
-                margin: 14px 0 8px;
-                border-bottom: 1px solid #e2e8f0;
-                padding-bottom: 4px;
-            }
-            #${CONFIG.panelId} .sentry-section-label:first-child {
-                margin-top: 0;
-            }
-            #${CONFIG.panelId} .sentry-grid {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 8px;
-            }
-            #${CONFIG.panelId} .metric {
-                background: #f1f5f9;
-                border-radius: 6px;
-                padding: 8px 10px;
-                border: 1px solid #e2e8f0;
-            }
-            #${CONFIG.panelId} .metric-label {
-                display: block;
-                font-size: 11px;
-                color: #64748b;
-                margin-bottom: 2px;
-            }
-            #${CONFIG.panelId} .metric-value {
-                font-size: 16px;
-                font-weight: 700;
-                color: #0f766e;
-            }
-            #${CONFIG.panelId} .status-stack {
-                display: grid;
-                gap: 4px;
-                font-size: 11px;
-                color: #475569;
-                background: #f8fafc;
-                border: 1px solid #e2e8f0;
-                border-radius: 6px;
-                padding: 8px 10px;
-                margin-top: 8px;
-            }
-            #${CONFIG.panelId} .status-stack strong {
-                color: #1e293b;
-            }
-            #${CONFIG.panelId} .analysis-box {
-                margin-top: 8px;
-                background: #1e293b;
-                color: #e2e8f0;
-                border-radius: 6px;
-                padding: 10px;
-                font-size: 12px;
-                line-height: 1.6;
-                white-space: pre-wrap;
-                min-height: 60px;
-                max-height: 200px;
-                overflow-y: auto;
-                word-break: break-all;
-            }
-            #${CONFIG.panelId} .config-toggle {
-                font-size: 12px;
-                color: #0284c7;
-                cursor: pointer;
-                text-align: center;
-                margin: 10px 0;
-                padding: 4px;
-            }
-            #${CONFIG.panelId} .config-toggle:hover {
-                text-decoration: underline;
-            }
-            #${CONFIG.panelId} .config-area {
-                display: none;
-                margin-bottom: 4px;
-            }
-            #${CONFIG.panelId} .field-group {
-                margin-bottom: 8px;
-            }
-            #${CONFIG.panelId} label {
-                display: block;
-                font-size: 11px;
-                color: #64748b;
-                margin-bottom: 3px;
-            }
-            #${CONFIG.panelId} input,
-            #${CONFIG.panelId} select {
-                width: 100%;
-                height: 28px;
-                border: 1px solid #cbd5e1;
-                border-radius: 4px;
-                padding: 0 8px;
-                font-size: 12px;
-                box-sizing: border-box;
-                background: #fff;
-                color: #1e293b;
-            }
-            #${CONFIG.panelId} .button-row {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 8px;
-                margin-bottom: 8px;
-            }
-            #${CONFIG.panelId} button {
-                height: 28px;
-                border: 1px solid transparent;
-                border-radius: 4px;
-                font-size: 12px;
-                cursor: pointer;
-                font-weight: 500;
-                transition: all 0.15s;
-            }
-            #save-config-btn {
-                width: 100%;
-                margin-bottom: 10px;
-                background: #0f766e;
-                color: #fff;
-            }
-            #save-config-btn:hover { background: #115e59; }
-            #manual-refresh-btn, #reset-history-btn {
-                background: #f1f5f9;
-                color: #334155;
-                border-color: #cbd5e1;
-            }
-            #manual-refresh-btn:hover, #reset-history-btn:hover { background: #e2e8f0; }
-            #test-alert-btn {
-                background: #fffbeb;
-                color: #b45309;
-                border-color: #fde68a;
-            }
-            #test-alert-btn:hover { background: #fef3c7; }
-            #run-ai-btn {
-                background: #eff6ff;
-                color: #1d4ed8;
-                border-color: #bfdbfe;
-            }
-            #run-ai-btn:hover { background: #dbeafe; }
-            #${CONFIG.panelId} .sentry-subtle {
-                color: #94a3b8;
-                font-size: 10px;
-                text-align: center;
-                margin-top: 8px;
-            }
-        `);
+		GM_addStyle(`#${C.id}{position:fixed;top:14px;right:14px;z-index:99999;width:min(360px,calc(100vw - 20px));max-height:84vh;display:flex;flex-direction:column;overflow:hidden;border-radius:20px;border:1px solid rgba(148,163,184,.24);background:rgba(255,255,255,.96);color:#142033;box-shadow:0 18px 42px rgba(15,23,42,.18);backdrop-filter:blur(18px);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;--ink:#142033;--muted:#617085;--border:rgba(148,163,184,.24);--soft:#f4f7fb;--accent:#0f766e}#${C.id}[data-theme=dark]{background:rgba(15,23,42,.96);color:#e6eef9;box-shadow:0 18px 42px rgba(2,6,23,.42);--ink:#e6eef9;--muted:#94a3b8;--border:rgba(148,163,184,.18);--soft:rgba(30,41,59,.96);--accent:#5eead4}#${C.id} *{box-sizing:border-box}#${C.id} .head{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:12px 16px;background:linear-gradient(135deg,rgba(16,76,103,.96),rgba(16,24,40,.94));color:#fff;cursor:move;user-select:none}#${C.id} .body{padding:16px;overflow-y:auto;display:grid;gap:12px}#${C.id} .grid,#${C.id} .actions,#${C.id} .theme{display:grid;gap:8px;grid-template-columns:1fr 1fr}#${C.id} .theme{grid-template-columns:repeat(3,1fr)}#${C.id} .card,#${C.id} .metric,#${C.id} .toggle,#${C.id} input,#${C.id} select,#${C.id} .analysis{border:1px solid var(--border);background:var(--soft);border-radius:14px}#${C.id} .metric,#${C.id} .card,#${C.id} .analysis{padding:12px}#${C.id} .small{font-size:11px;color:var(--muted)}#${C.id} .big{font-size:18px;font-weight:800;color:var(--accent)}#${C.id} .analysis{min-height:72px;max-height:200px;overflow:auto;white-space:pre-wrap;line-height:1.65;background:rgba(15,23,42,.96);color:#e2e8f0}#${C.id} .toggle{padding:8px 12px;text-align:center;font-size:12px;color:var(--accent);cursor:pointer}#${C.id} .config{display:none;gap:10px}#${C.id} label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}#${C.id} input,#${C.id} select{width:100%;min-height:36px;padding:0 10px;color:var(--ink)}#${C.id} button{min-height:38px;border-radius:12px;border:1px solid transparent;cursor:pointer;font:inherit;font-weight:600}#${C.id} .primary{background:linear-gradient(135deg,#0f766e,#115e59);color:#fff}#${C.id} .soft{background:var(--soft);color:var(--ink);border-color:var(--border)}#${C.id} .warn{background:#fffbeb;color:#b45309;border-color:#fde68a}#${C.id} .theme button{background:var(--soft);color:var(--ink);border-color:var(--border)}#${C.id} .theme button[data-active=true]{outline:2px solid rgba(94,234,212,.24)}#${C.id} .subtle{font-size:11px;color:var(--muted);line-height:1.5}@media (max-width:640px){#${C.id}{top:10px;right:10px;width:min(92vw,360px)}#${C.id} .grid,#${C.id} .actions,#${C.id} .theme{grid-template-columns:1fr}}`);
 	}
 
-	function parseMoney(text) {
-		if (!text) return 0;
-		const normalized = String(text).replace(/[^\d.-]/g, "");
-		const value = parseFloat(normalized);
-		return Number.isFinite(value) ? value : 0;
+	function render() {
+		if (!ui.panel) return;
+		ui.panel.dataset.theme = effectiveTheme();
+		put("#metric-total", fmtMoney(state.current));
+		put("#metric-window", fmtMoney(state.increase));
+		put("#metric-window-label", `${state.cfg.compare} min delta`);
+		const left = Math.max(0, Math.floor((state.lastReload + state.cfg.refresh * 6e4 - Date.now()) / 1e3));
+		put("#refresh-countdown", `${String(Math.floor(left / 60)).padStart(2, "0")}:${String(left % 60).padStart(2, "0")}`);
+		put("#theme-badge", `${state.theme}/${effectiveTheme()}`);
+		put("#instance-id", state.id); put("#backend-status", state.lastBackend); put("#account-name", accountName()); put("#account-id", accountId()); put("#page-type", pageType()); put("#analysis-output", state.lastAnalysis || "Waiting for AI analysis.");
+		ui.panel.querySelectorAll("[data-theme-mode]").forEach((btn) => { btn.dataset.active = String(btn.dataset.themeMode === state.theme); });
 	}
 
-	function formatMoney(value) {
-		return `${Number(value || 0).toFixed(2)} 元`;
+	function loadInputs() {
+		qs("#backend-base-url").value = state.cfg.backend; qs("#account-name-override").value = state.cfg.accountName; qs("#account-id-override").value = state.cfg.accountId; qs("#refresh-interval").value = state.cfg.refresh; qs("#compare-interval").value = state.cfg.compare; qs("#notify-threshold").value = state.cfg.threshold; qs("#ai-enabled").value = String(state.cfg.aiEnabled); qs("#ai-provider").value = state.cfg.aiProvider;
 	}
 
-	function getTodayStr() {
-		const now = new Date();
-		const year = now.getFullYear();
-		const month = String(now.getMonth() + 1).padStart(2, "0");
-		const day = String(now.getDate()).padStart(2, "0");
-		return `${year}-${month}-${day}`;
+	function saveInputs() {
+		state.cfg.backend = backendBase(qs("#backend-base-url").value.trim()); state.cfg.accountName = qs("#account-name-override").value.trim(); state.cfg.accountId = qs("#account-id-override").value.trim(); state.cfg.refresh = Number(qs("#refresh-interval").value) || 5; state.cfg.compare = Number(qs("#compare-interval").value) || 30; state.cfg.threshold = Number(qs("#notify-threshold").value) || 1000; state.cfg.aiEnabled = qs("#ai-enabled").value === "true"; state.cfg.aiProvider = qs("#ai-provider").value || "deepseek";
+		setVal(K.bu, state.cfg.backend); setVal(K.au, `${state.cfg.backend}/analyze`); setVal(K.anm, state.cfg.accountName); setVal(K.aid, state.cfg.accountId); setVal(K.ri, state.cfg.refresh); setVal(K.ci, state.cfg.compare); setVal(K.th, state.cfg.threshold); setVal(K.ae, state.cfg.aiEnabled); setVal(K.ap, state.cfg.aiProvider);
 	}
 
-	function getPageType() {
-		const path = location.pathname;
-		if (path.includes("/financial/record")) return "financial";
-		if (path.includes("/manage")) return "manage";
-		if (path.includes("/superManage")) return "super-manage";
-		return "unknown";
-	}
-
-	function getAccountId() {
-		if (state.config.accountIdOverride)
-			return state.config.accountIdOverride;
-
-		const query = new URLSearchParams(location.search);
-		const candidateKeys = [
-			"accountId",
-			"account_id",
-			"advertiserId",
-			"advertiser_id",
-			"cid",
-		];
-		for (const key of candidateKeys) {
-			const value = query.get(key);
-			if (value) return value;
-		}
-
-		return "未识别账号ID";
-	}
-
-	function getAccountName() {
-		if (state.config.accountNameOverride)
-			return state.config.accountNameOverride;
-
-		const candidates = [
-			".account-info-name",
-			".account-name",
-			"[class*='Account'] [class*='name']",
-			"header [class*='name']",
-		];
-		for (const selector of candidates) {
-			const text = $(selector).first().text().trim();
-			if (text) return text;
-		}
-		return document.title || "未识别账号";
-	}
-
-	function hasRecognizedAccountId() {
-		const accountId = getAccountId();
-		return Boolean(accountId && accountId !== "未识别账号ID");
-	}
-
-	function buildAlertAccountLabel() {
-		return hasRecognizedAccountId()
-			? `${getAccountName()} (${getAccountId()})`
-			: getAccountName();
-	}
-
-	function buildAccountInfoLines() {
-		const lines = [`账号名称：${getAccountName()}`];
-		if (hasRecognizedAccountId()) {
-			lines.push(`账号ID：${getAccountId()}`);
-		}
-		return lines;
-	}
-
-	function getRowsBySelectors() {
-		const selectors = [
-			"#root section section main table tbody tr",
-			".ant-table-tbody tr.ant-table-row",
-			".ant-table-row",
-		];
-
-		for (const selector of selectors) {
-			const rows = $(selector);
-			if (rows.length > 0) return rows;
-		}
-
-		return $();
-	}
-
-	function scrapeTodaySpend() {
-		const todayStr = getTodayStr();
-		const rows = getRowsBySelectors();
-		let detectedSpend = -1;
-
-		rows.each(function () {
-			const cells = $(this).find("td");
-			if (cells.length < 2) return;
-
-			const dateCell = cells.eq(0).text().trim();
-			if (dateCell === todayStr || dateCell.includes(todayStr)) {
-				detectedSpend = parseMoney(cells.eq(1).text());
-				return false;
-			}
-		});
-
-		return detectedSpend;
-	}
-
-	function sleep(ms) {
-		return new Promise((resolve) => setTimeout(resolve, ms));
-	}
-
-	function trimHistory() {
-		const now = Date.now();
-		state.history = state.history.filter(
-			(item) => now - item.time <= CONFIG.historyRetentionMs,
-		);
-	}
-
-	function persistRuntimeMetrics() {
-		GM_setValue("current_spend", state.currentSpend);
-		GM_setValue("increase_in_window", state.increaseInWindow);
-		GM_setValue("baseline_spend", state.baselineSpend);
-		GM_setValue("baseline_time", state.baselineTime);
-		GM_setValue("last_check_time", state.lastCheckTime);
-		GM_setValue("last_evaluate_attempt_at", state.lastEvaluateAttemptAt);
-	}
-
-	function appendHistory(spend) {
-		const now = Date.now();
-		const lastPoint = state.history[state.history.length - 1];
-		if (
-			!lastPoint ||
-			Math.abs(lastPoint.spend - spend) > 0.009 ||
-			now - lastPoint.time >= 55 * 1000
-		) {
-			state.history.push({ time: now, spend });
-		}
-		trimHistory();
-		GM_setValue("spend_history", state.history);
-	}
-
-	function getBaselineRecord() {
-		const compareStart =
-			Date.now() - state.config.compareIntervalMin * 60 * 1000;
-		const fallback = state.history[0] || {
-			time: Date.now(),
-			spend: state.currentSpend,
-		};
-		let latestBeforeWindow = null;
-		let earliestAfterWindow = null;
-
-		for (const item of state.history) {
-			if (item.time <= compareStart) {
-				latestBeforeWindow = item;
-				continue;
-			}
-			if (!earliestAfterWindow) {
-				earliestAfterWindow = item;
-			}
-		}
-
-		return latestBeforeWindow || earliestAfterWindow || fallback;
-	}
-
-	async function scrapeTodaySpendWithRetry() {
-		let spend = -1;
-		for (let attempt = 0; attempt < CONFIG.scrapeRetryCount; attempt++) {
-			spend = scrapeTodaySpend();
-			if (spend >= 0) {
-				return spend;
-			}
-			if (attempt < CONFIG.scrapeRetryCount - 1) {
-				await sleep(CONFIG.scrapeRetryDelayMs);
-			}
-		}
-		return spend;
-	}
-
-	function serializeHistory() {
-		return state.history.map((item) => ({
-			timestamp: item.time,
-			spend: item.spend,
-		}));
-	}
-
-	function buildEventPayload() {
-		return {
-			current_spend: state.currentSpend,
-			increase_amount: state.increaseInWindow,
-			compare_interval_min: state.config.compareIntervalMin,
-			threshold: state.config.notifyThreshold,
-			baseline_time: state.baselineTime,
-			event_time: Date.now(),
-			extra_metrics: {
-				baseline_spend: state.baselineSpend,
-				samples: state.history.length,
-			},
-		};
-	}
-
-	function buildBusinessContext() {
-		const lines = [
-			`当前账号名称：${getAccountName()}`,
-			`脚本实例ID：${state.instanceId}`,
-			`当前页面类型：${getPageType()}`,
-			`当前页面地址：${location.href}`,
-		];
-		if (hasRecognizedAccountId()) {
-			lines.splice(1, 0, `当前账号ID：${getAccountId()}`);
-		}
-		return lines.join("\n");
-	}
-
-	function getAnalyzeUrl() {
-		return `${state.config.backendBaseUrl}/analyze`;
-	}
-
-	function getIngestUrl() {
-		return `${state.config.backendBaseUrl}/ingest`;
-	}
-
-	function getHeartbeatUrl() {
-		return `${state.config.backendBaseUrl}/heartbeat`;
-	}
-
-	function getErrorUrl() {
-		return `${state.config.backendBaseUrl}/error`;
-	}
-
-	function getTestAlertUrl() {
-		return `${state.config.backendBaseUrl}/alerts/test`;
-	}
-
-	function setBackendMessage(message) {
-		state.lastBackendMessage = message;
-		GM_setValue("last_backend_message", message);
-		$("#backend-status").text(message);
-	}
-
-	function gmRequest(options) {
-		return new Promise((resolve, reject) => {
-			GM_xmlhttpRequest({
-				...options,
-				onload: resolve,
-				onerror: reject,
-				ontimeout: reject,
-			});
-		});
-	}
-
-	function buildCommonContext() {
-		const rows = getRowsBySelectors();
-		return {
-			instance_id: state.instanceId,
-			account_id: getAccountId(),
-			account_name: getAccountName(),
-			page_type: getPageType(),
-			page_url: location.href,
-			script_version: GM_info?.script?.version || "unknown",
-			row_count: rows.length,
-		};
-	}
-
-	async function sendHeartbeat(
-		captureStatus = state.lastCaptureStatus || "warning",
-		errorMessage = state.lastErrorMessage || "",
-	) {
-		const now = Date.now();
-		const payload = {
-			...buildCommonContext(),
-			heartbeat_at: now,
-			browser_visible: document.visibilityState === "visible",
-			capture_status: captureStatus,
-			last_capture_at: state.lastCheckTime || null,
-			error_message: errorMessage || null,
-		};
-
+	async function analyze() {
+		if (!state.cfg.aiEnabled) { state.lastAnalysis = "AI disabled."; setVal(K.lt, state.lastAnalysis); render(); return state.lastAnalysis; }
 		try {
-			const response = await gmRequest({
-				method: "POST",
-				url: getHeartbeatUrl(),
-				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify(payload),
-				timeout: 15000,
-			});
+			const response = await request(`${state.cfg.backend}/analyze`, { provider_override: state.cfg.aiProvider, event: { current_spend: state.current, increase_amount: state.increase, compare_interval_min: state.cfg.compare, threshold: state.cfg.threshold, baseline_time: state.baseTime, event_time: Date.now(), extra_metrics: { baseline_spend: state.base, samples: state.history.length } }, history: state.history.map((x) => ({ timestamp: x.time, spend: x.spend })), business_context: [`Account: ${accountName()}`, `Account ID: ${accountId()}`, `Instance: ${state.id}`, `Page: ${pageType()}`, `URL: ${location.href}`].join("\n") });
 			const body = JSON.parse(response.responseText || "{}");
-			state.lastHeartbeatSentAt = now;
-			GM_setValue("last_heartbeat_sent_at", now);
-			setBackendMessage(`心跳成功 ${new Date(now).toLocaleTimeString()}`);
-			return body;
-		} catch (error) {
-			setBackendMessage(
-				`心跳失败 ${error?.error || error?.message || "unknown error"}`,
-			);
-			return null;
-		}
+			state.lastAnalysis = body.raw_text || body.summary || "Empty AI response.";
+		} catch (error) { state.lastAnalysis = `AI failed: ${error?.error || error?.message || "unknown error"}`; }
+		setVal(K.lt, state.lastAnalysis); render(); return state.lastAnalysis;
 	}
 
-	async function sendIngest() {
-		const payload = {
-			...buildCommonContext(),
-			captured_at: Date.now(),
-			metrics: {
-				current_spend: state.currentSpend,
-				increase_amount: state.increaseInWindow,
-				baseline_spend: state.baselineSpend,
-				compare_interval_min: state.config.compareIntervalMin,
-				notify_threshold: state.config.notifyThreshold,
-			},
-			raw_context: {
-				history_samples: state.history.length,
-				baseline_time: state.baselineTime,
-				today: getTodayStr(),
-				ai_enabled: state.config.aiEnabled,
-				ai_provider: state.config.aiProvider,
-				business_context: buildBusinessContext(),
-			},
-		};
+	async function heartbeat(status = state.lastStatus, errorMessage = state.lastError) {
+		try { await request(`${state.cfg.backend}/heartbeat`, { ...ctx(), heartbeat_at: Date.now(), browser_visible: document.visibilityState === "visible", capture_status: status, last_capture_at: state.lastCheck || null, error_message: errorMessage || null }); state.lastHeartbeat = Date.now(); state.lastBackend = `Heartbeat ${new Date().toLocaleTimeString()}`; }
+		catch (error) { state.lastBackend = `Heartbeat failed: ${error?.error || error?.message || "unknown error"}`; }
+		persist(); render();
+	}
 
+	async function reportError(type, message) { try { await request(`${state.cfg.backend}/error`, { instance_id: state.id, occurred_at: Date.now(), error_type: type, error_message: message, page_url: location.href, script_version: (typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "unknown" }); } catch (_) {} }
+	async function testAlert(text) { try { const response = await request(`${state.cfg.backend}/alerts/test`, { ...ctx(), current_spend: state.current, increase_amount: state.increase, compare_interval_min: state.cfg.compare, baseline_spend: state.base || null, baseline_time: state.baseTime || null, analysis_text: text || "", triggered_at: Date.now() }); return JSON.parse(response.responseText || "{}"); } catch (error) { return { ok: false, message: error?.error || error?.message || "unknown error" }; } }
+
+	async function evaluate() {
+		if (state.evaluating) return; state.evaluating = true; state.lastEval = Date.now(); setVal(K.la, state.lastEval);
 		try {
-			const response = await gmRequest({
-				method: "POST",
-				url: getIngestUrl(),
-				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify(payload),
-				timeout: 15000,
-			});
-			state.lastCaptureStatus = "success";
-			state.lastErrorMessage = "";
-			GM_setValue("last_capture_status", state.lastCaptureStatus);
-			GM_setValue("last_error_message", "");
-			setBackendMessage(
-				`采集上报成功 ${new Date().toLocaleTimeString()}`,
-			);
-			return JSON.parse(response.responseText || "{}");
+			const spend = await scrapeSpendRetry();
+			if (spend < 0) { const msg = "Daily spend row not found."; state.lastStatus = "warning"; state.lastError = msg; state.lastBackend = msg; persist(); render(); await heartbeat("warning", msg); return; }
+			state.current = spend; pushHistory(spend); const base = baseline(); state.base = base.spend; state.baseTime = base.time; state.increase = Math.max(0, spend - base.spend); state.lastCheck = Date.now(); state.lastStatus = "success"; state.lastError = ""; state.lastBackend = `Capture ok ${new Date().toLocaleTimeString()}`; persist(); render();
+			await request(`${state.cfg.backend}/ingest`, { ...ctx(), captured_at: Date.now(), metrics: { current_spend: state.current, increase_amount: state.increase, baseline_spend: state.base, compare_interval_min: state.cfg.compare, notify_threshold: state.cfg.threshold }, raw_context: { history_samples: state.history.length, baseline_time: state.baseTime, ai_enabled: state.cfg.aiEnabled, ai_provider: state.cfg.aiProvider } });
 		} catch (error) {
-			const message = `采集上报失败：${error?.error || error?.message || "unknown error"}`;
-			state.lastCaptureStatus = "error";
-			state.lastErrorMessage = message;
-			GM_setValue("last_capture_status", state.lastCaptureStatus);
-			GM_setValue("last_error_message", message);
-			setBackendMessage(message);
-			await sendErrorReport("ingest_error", message);
-			return null;
-		}
-	}
-
-	async function sendErrorReport(errorType, errorMessage) {
-		try {
-			await gmRequest({
-				method: "POST",
-				url: getErrorUrl(),
-				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify({
-					instance_id: state.instanceId,
-					occurred_at: Date.now(),
-					error_type: errorType,
-					error_message: errorMessage,
-					page_url: location.href,
-					script_version: GM_info?.script?.version || "unknown",
-				}),
-				timeout: 15000,
-			});
-		} catch (_error) {
-			// Ignore report failures to avoid recursive error loops.
-		}
-	}
-
-	async function triggerBackendTestAlert(analysisText) {
-		try {
-			const response = await gmRequest({
-				method: "POST",
-				url: getTestAlertUrl(),
-				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify({
-					...buildCommonContext(),
-					current_spend: state.currentSpend,
-					increase_amount: state.increaseInWindow,
-					compare_interval_min: state.config.compareIntervalMin,
-					baseline_spend: state.baselineSpend || null,
-					baseline_time: state.baselineTime || null,
-					analysis_text: analysisText || "",
-					triggered_at: Date.now(),
-				}),
-				timeout: 20000,
-			});
-			return JSON.parse(response.responseText || "{}");
-		} catch (error) {
-			return {
-				ok: false,
-				message: error?.error || error?.message || "unknown error",
-			};
-		}
-	}
-
-	async function requestAiAnalysis() {
-		if (!state.config.aiEnabled) return "";
-
-		const payload = {
-			provider_override: state.config.aiProvider,
-			event: buildEventPayload(),
-			history: serializeHistory(),
-			business_context: buildBusinessContext(),
-		};
-
-		try {
-			const response = await gmRequest({
-				method: "POST",
-				url: getAnalyzeUrl(),
-				headers: { "Content-Type": "application/json" },
-				data: JSON.stringify(payload),
-				timeout: 45000,
-			});
-
-			const body = JSON.parse(response.responseText);
-			const text = body.raw_text || body.summary || "";
-			state.lastAnalysisText = text;
-			GM_setValue("last_analysis_text", text);
-			return text;
-		} catch (error) {
-			const message = `AI 分析失败：${error?.error || error?.message || "unknown error"}`;
-			state.lastAnalysisText = message;
-			GM_setValue("last_analysis_text", message);
-			return message;
-		}
-	}
-
-	function renderAnalysisText(text) {
-		$("#analysis-output").text(text || "暂无 AI 分析结果。");
-	}
-
-	function renderStatus() {
-		$("#metric-total").text(formatMoney(state.currentSpend));
-		$("#metric-window").text(formatMoney(state.increaseInWindow));
-
-		const nextReloadAt =
-			state.lastReloadTime + state.config.refreshIntervalMin * 60 * 1000;
-		const diffSec = Math.max(
-			0,
-			Math.floor((nextReloadAt - Date.now()) / 1000),
-		);
-		const minutes = String(Math.floor(diffSec / 60)).padStart(2, "0");
-		const seconds = String(diffSec % 60).padStart(2, "0");
-
-		$("#refresh-countdown").text(`${minutes}:${seconds}`);
-		$("#last-update-time").text(new Date().toLocaleTimeString());
-		$("#instance-id").text(state.instanceId);
-		$("#backend-status").text(state.lastBackendMessage);
-		renderAnalysisText(state.lastAnalysisText);
-	}
-
-	function saveConfigFromUI() {
-		state.config.accountIdOverride = $("#account-id-override").val().trim();
-		state.config.accountNameOverride = $("#account-name-override")
-			.val()
-			.trim();
-		state.config.refreshIntervalMin =
-			Number($("#refresh-interval").val()) || 5;
-		state.config.compareIntervalMin =
-			Number($("#compare-interval").val()) || 30;
-		state.config.notifyThreshold =
-			Number($("#notify-threshold").val()) || 1000;
-		state.config.aiEnabled = $("#ai-enabled").val() === "true";
-		state.config.aiProvider = $("#ai-provider").val() || "deepseek";
-		state.config.backendBaseUrl = normalizeBackendBaseUrl(
-			$("#backend-base-url").val().trim(),
-		);
-
-		GM_setValue("account_id_override", state.config.accountIdOverride);
-		GM_setValue("account_name_override", state.config.accountNameOverride);
-		GM_setValue("refresh_interval_min", state.config.refreshIntervalMin);
-		GM_setValue("compare_interval_min", state.config.compareIntervalMin);
-		GM_setValue("notify_threshold", state.config.notifyThreshold);
-		GM_setValue("ai_enabled", state.config.aiEnabled);
-		GM_setValue("ai_provider", state.config.aiProvider);
-		GM_setValue("backend_base_url", state.config.backendBaseUrl);
-		GM_setValue(
-			"analysis_gateway_url",
-			`${state.config.backendBaseUrl}/analyze`,
-		);
-	}
-
-	function enablePanelDrag() {
-		const panel = document.getElementById(CONFIG.panelId);
-		if (!panel) return;
-		const handle = panel.querySelector(".sentry-head");
-		if (!handle) return;
-
-		let isDragging = false;
-		let offsetX = 0;
-		let offsetY = 0;
-
-		handle.addEventListener("mousedown", (event) => {
-			if (
-				["INPUT", "BUTTON", "SELECT", "TEXTAREA", "OPTION"].includes(
-					event.target.tagName,
-				)
-			) {
-				return;
-			}
-			isDragging = true;
-			const rect = panel.getBoundingClientRect();
-			panel.style.right = "auto";
-			panel.style.left = `${rect.left}px`;
-			panel.style.top = `${rect.top}px`;
-			offsetX = event.clientX - rect.left;
-			offsetY = event.clientY - rect.top;
-			event.preventDefault();
-		});
-
-		document.addEventListener("mousemove", (event) => {
-			if (!isDragging) return;
-			const nextLeft = Math.max(
-				8,
-				Math.min(
-					window.innerWidth - panel.offsetWidth - 8,
-					event.clientX - offsetX,
-				),
-			);
-			const nextTop = Math.max(
-				8,
-				Math.min(
-					window.innerHeight - panel.offsetHeight - 8,
-					event.clientY - offsetY,
-				),
-			);
-			panel.style.left = `${nextLeft}px`;
-			panel.style.top = `${nextTop}px`;
-		});
-
-		document.addEventListener("mouseup", () => {
-			if (!isDragging) return;
-			isDragging = false;
-			state.panelPosition.left = panel.style.left;
-			state.panelPosition.top = panel.style.top;
-			GM_setValue("panel_left", state.panelPosition.left);
-			GM_setValue("panel_top", state.panelPosition.top);
-		});
-	}
-
-	function restorePanelPosition() {
-		const panel = document.getElementById(CONFIG.panelId);
-		if (!panel) return;
-		if (state.panelPosition.left && state.panelPosition.top) {
-			panel.style.right = "auto";
-			panel.style.left = state.panelPosition.left;
-			panel.style.top = state.panelPosition.top;
-		}
+			const msg = `Capture failed: ${error?.message || "unknown error"}`; state.lastStatus = "error"; state.lastError = msg; state.lastBackend = msg; persist(); render(); await reportError("capture_error", msg); await heartbeat("error", msg);
+		} finally { state.evaluating = false; }
 	}
 
 	function createPanel() {
-		if ($(`#${CONFIG.panelId}`).length > 0) return;
-
-		const html = `
-            <div id="${CONFIG.panelId}">
-                <div class="sentry-head">
-                    <span>AdBudgetSentry</span>
-                    <div class="sentry-head-right">
-                        <span>刷新: <span id="refresh-countdown">--:--</span></span>
-                    </div>
-                </div>
-                <div class="sentry-body">
-                    <div class="sentry-section-label">实时监控</div>
-                    <div class="sentry-grid">
-                        <div class="metric">
-                            <span class="metric-label">今日总消耗</span>
-                            <div id="metric-total" class="metric-value">-</div>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">${state.config.compareIntervalMin} 分钟增量</span>
-                            <div id="metric-window" class="metric-value">-</div>
-                        </div>
-                    </div>
-                    <div class="status-stack">
-                        <div><strong>通信：</strong><span id="backend-status">${state.lastBackendMessage}</span></div>
-                        <div style="display:flex; justify-content:space-between;">
-                            <span><strong>实例：</strong><span id="instance-id">${state.instanceId}</span></span>
-                            <span>更新：<span id="last-update-time">-</span></span>
-                        </div>
-                    </div>
-
-                    <div class="sentry-section-label">最近分析</div>
-                    <div class="analysis-box" id="analysis-output">暂无 AI 分析结果。</div>
-
-                    <div class="config-toggle" id="toggle-config-btn">⚙️ 展开配置与操作</div>
-                    <div class="config-area" id="config-area-wrap">
-                        <div class="field-group">
-                            <label for="backend-base-url">后端网关地址</label>
-                            <input id="backend-base-url" type="text" value="${state.config.backendBaseUrl}" />
-                        </div>
-                        <div class="sentry-grid">
-                            <div class="field-group">
-                                <label for="account-name-override">账号名称(可选覆盖)</label>
-                                <input id="account-name-override" type="text" value="${state.config.accountNameOverride}" placeholder="自动识别" />
-                            </div>
-                            <div class="field-group">
-                                <label for="account-id-override">账号ID(可选覆盖)</label>
-                                <input id="account-id-override" type="text" value="${state.config.accountIdOverride}" placeholder="自动识别" />
-                            </div>
-                        </div>
-                        <div class="status-stack" style="margin: 0 0 10px 0;">
-                            <div><strong>告警发送：</strong>已改由后端统一处理</div>
-                            <div>PushPlus Token、渠道和冷却规则请在后端配置文件中维护。</div>
-                        </div>
-                        <div class="sentry-grid">
-                            <div class="field-group">
-                                <label for="refresh-interval">刷新(分钟)</label>
-                                <input id="refresh-interval" type="number" value="${state.config.refreshIntervalMin}" />
-                            </div>
-                            <div class="field-group">
-                                <label for="compare-interval">窗口(分钟)</label>
-                                <input id="compare-interval" type="number" value="${state.config.compareIntervalMin}" />
-                            </div>
-                        </div>
-                        <div class="sentry-grid">
-                            <div class="field-group">
-                                <label for="notify-threshold">阈值(元)</label>
-                                <input id="notify-threshold" type="number" value="${state.config.notifyThreshold}" />
-                            </div>
-                            <div class="field-group">
-                                <label for="ai-enabled">智能分析</label>
-                                <select id="ai-enabled">
-                                    <option value="true" ${state.config.aiEnabled ? "selected" : ""}>开启</option>
-                                    <option value="false" ${state.config.aiEnabled ? "" : "selected"}>关闭</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="field-group">
-                            <label for="ai-provider">分析路线</label>
-                            <select id="ai-provider">
-                                <option value="local" ${state.config.aiProvider === "local" ? "selected" : ""}>本地 Qwen/OpenAI</option>
-                                <option value="deepseek" ${state.config.aiProvider === "deepseek" ? "selected" : ""}>DeepSeek API</option>
-                            </select>
-                        </div>
-                        
-                        <button id="save-config-btn">保存配置</button>
-                        <div class="button-row">
-                            <button id="manual-refresh-btn">手动刷新</button>
-                            <button id="test-alert-btn">测试报警</button>
-                        </div>
-                        <div class="button-row">
-                            <button id="reset-history-btn">清空历史</button>
-                            <button id="run-ai-btn">立即分析</button>
-                        </div>
-                        <div class="sentry-subtle">面板支持拖拽，位置自动记忆</div>
-                    </div>
-                </div>
-            </div>
-        `;
-
-		$("body").append(html);
-		restorePanelPosition();
-		enablePanelDrag();
-
-		// 交互：切换设置菜单的展开状态
-		$("#toggle-config-btn").on("click", function () {
-			const area = $("#config-area-wrap");
-			if (area.is(":visible")) {
-				area.hide();
-				$(this).text("⚙️ 展开配置与操作");
-			} else {
-				area.show();
-				$(this).text("收起配置与操作");
-			}
-		});
-
-		$("#save-config-btn").on("click", () => {
-			saveConfigFromUI();
-			alert("配置已保存。");
-			renderStatus();
-		});
-
-		$("#manual-refresh-btn").on("click", () => {
-			GM_setValue("last_reload_time", Date.now());
-			location.reload();
-		});
-
-		$("#reset-history-btn").on("click", () => {
-			state.history = [];
-			state.baselineSpend = 0;
-			state.baselineTime = 0;
-			state.currentSpend = 0;
-			state.increaseInWindow = 0;
-			state.lastCheckTime = 0;
-			state.lastEvaluateAttemptAt = 0;
-			GM_setValue("spend_history", []);
-			state.lastAnalysisText = "";
-			GM_setValue("last_analysis_text", "");
-			persistRuntimeMetrics();
-			renderStatus();
-			alert("历史数据已重置。");
-		});
-
-		$("#test-alert-btn").on("click", async () => {
-			saveConfigFromUI();
-			const analysisText = await requestAiAnalysis();
-			const result = await triggerBackendTestAlert(analysisText);
-			if (result.ok) {
-				setBackendMessage("后端测试报警已发送");
-				alert("测试报警已发送。");
-			} else {
-				setBackendMessage(`后端测试报警失败 ${result.message || "unknown error"}`);
-				alert("测试报警发送失败，请检查后端 PushPlus 配置。");
-			}
-		});
-
-		$("#run-ai-btn").on("click", async () => {
-			saveConfigFromUI();
-			const analysisText = await requestAiAnalysis();
-			renderAnalysisText(analysisText);
-		});
+		const panel = document.createElement("div");
+		panel.id = C.id;
+		panel.innerHTML = `<div class="head"><div><div style="font-size:15px;font-weight:800;">AdBudgetSentry</div><div style="font-size:11px;opacity:.82;">single-instance monitor panel</div></div><div><div id="theme-badge" style="font-size:12px;text-align:right;">theme</div><div style="font-size:12px;text-align:right;">reload <span id="refresh-countdown">--:--</span></div></div></div><div class="body"><div class="grid"><div class="metric"><div class="small">today total</div><div class="big" id="metric-total">-</div></div><div class="metric"><div class="small" id="metric-window-label">30 min delta</div><div class="big" id="metric-window">-</div></div></div><div class="card"><div class="small">account</div><div id="account-name"></div><div class="small" style="margin-top:8px;">account id</div><div id="account-id"></div><div class="small" style="margin-top:8px;">page</div><div id="page-type"></div><div class="small" style="margin-top:8px;">instance</div><div id="instance-id"></div><div class="small" style="margin-top:8px;">backend</div><div id="backend-status"></div></div><div class="analysis" id="analysis-output">Waiting for AI analysis.</div><div class="toggle" id="toggle-config-btn">Open settings</div><div class="config" id="config-wrap"><div class="grid"><div><label>backend</label><input id="backend-base-url" type="text" /></div><div><label>account name override</label><input id="account-name-override" type="text" /></div><div><label>account id override</label><input id="account-id-override" type="text" /></div><div><label>refresh minutes</label><input id="refresh-interval" type="number" min="1" /></div><div><label>compare minutes</label><input id="compare-interval" type="number" min="1" /></div><div><label>alert threshold</label><input id="notify-threshold" type="number" min="0" /></div><div><label>AI enabled</label><select id="ai-enabled"><option value="true">true</option><option value="false">false</option></select></div><div><label>AI provider</label><select id="ai-provider"><option value="local">local</option><option value="deepseek">deepseek</option></select></div></div><div class="theme" style="margin-top:10px;"><button type="button" data-theme-mode="system">system</button><button type="button" data-theme-mode="light">light</button><button type="button" data-theme-mode="dark">dark</button></div><div class="actions" style="margin-top:10px;"><button type="button" class="primary" id="save-config-btn">save</button><button type="button" class="soft" id="manual-refresh-btn">refresh</button><button type="button" class="warn" id="test-alert-btn">test alert</button><button type="button" class="soft" id="reset-history-btn">reset history</button><button type="button" class="soft" id="run-ai-btn">run AI</button></div><div class="subtle">Default theme follows the system. Mobile uses a narrow layout with larger tap targets.</div></div></div>`;
+		document.body.appendChild(panel); ui.panel = panel; loadInputs(); render();
+		if (state.pos.left && state.pos.top) { panel.style.right = "auto"; panel.style.left = state.pos.left; panel.style.top = state.pos.top; }
 	}
 
-	async function evaluateSpend() {
-		if (state.isEvaluating) return;
-		state.isEvaluating = true;
-		state.lastEvaluateAttemptAt = Date.now();
-		GM_setValue("last_evaluate_attempt_at", state.lastEvaluateAttemptAt);
-		try {
-			const spend = await scrapeTodaySpendWithRetry();
-			if (spend < 0) {
-				state.lastCaptureStatus = "warning";
-				state.lastErrorMessage = "未找到今日消耗数据行";
-				GM_setValue("last_capture_status", state.lastCaptureStatus);
-				GM_setValue("last_error_message", state.lastErrorMessage);
-				renderStatus();
-				await sendHeartbeat("warning", state.lastErrorMessage);
-				return;
-			}
-
-			state.currentSpend = spend;
-			appendHistory(spend);
-
-			const baseline = getBaselineRecord();
-			state.baselineSpend = baseline.spend;
-			state.baselineTime = baseline.time;
-			state.increaseInWindow = Math.max(0, spend - baseline.spend);
-			state.lastCheckTime = Date.now();
-			state.lastCaptureStatus = "success";
-			state.lastErrorMessage = "";
-			GM_setValue("last_capture_status", state.lastCaptureStatus);
-			GM_setValue("last_error_message", "");
-			persistRuntimeMetrics();
-
-			renderStatus();
-			await sendIngest();
-		} catch (error) {
-			const message = `采集失败：${error?.message || "unknown error"}`;
-			state.lastCaptureStatus = "error";
-			state.lastErrorMessage = message;
-			GM_setValue("last_capture_status", state.lastCaptureStatus);
-			GM_setValue("last_error_message", message);
-			setBackendMessage(message);
-			await sendErrorReport("capture_error", message);
-			await sendHeartbeat("error", message);
-		} finally {
-			state.isEvaluating = false;
-		}
+	function bindDrag() {
+		const handle = qs(".head");
+		handle.addEventListener("mousedown", (event) => {
+			if (window.innerWidth <= 640) return;
+			if (["INPUT", "BUTTON", "SELECT", "TEXTAREA", "OPTION"].includes(event.target.tagName)) return;
+			ui.dragging = true; const rect = ui.panel.getBoundingClientRect(); ui.panel.style.right = "auto"; ui.panel.style.left = `${rect.left}px`; ui.panel.style.top = `${rect.top}px`; ui.ox = event.clientX - rect.left; ui.oy = event.clientY - rect.top; event.preventDefault();
+		});
+		document.addEventListener("mousemove", (event) => { if (!ui.dragging) return; ui.panel.style.left = `${Math.max(8, Math.min(window.innerWidth - ui.panel.offsetWidth - 8, event.clientX - ui.ox))}px`; ui.panel.style.top = `${Math.max(8, Math.min(window.innerHeight - ui.panel.offsetHeight - 8, event.clientY - ui.oy))}px`; });
+		document.addEventListener("mouseup", () => { if (!ui.dragging) return; ui.dragging = false; state.pos.left = ui.panel.style.left; state.pos.top = ui.panel.style.top; setVal(K.l, state.pos.left); setVal(K.t, state.pos.top); });
 	}
 
-	async function mainLoop() {
+	function bindUI() {
+		qs("#toggle-config-btn").addEventListener("click", function () { const wrap = qs("#config-wrap"); const visible = wrap.style.display === "grid"; wrap.style.display = visible ? "none" : "grid"; this.textContent = visible ? "Open settings" : "Close settings"; });
+		qs("#save-config-btn").addEventListener("click", () => { saveInputs(); render(); alert("Saved."); });
+		qs("#manual-refresh-btn").addEventListener("click", () => { state.lastReload = Date.now(); setVal(K.lr, state.lastReload); location.reload(); });
+		qs("#reset-history-btn").addEventListener("click", () => { state.history = []; state.base = 0; state.baseTime = 0; state.current = 0; state.increase = 0; state.lastCheck = 0; state.lastEval = 0; state.lastAnalysis = ""; setVal(K.h, []); setVal(K.lt, ""); persist(); render(); alert("History reset."); });
+		qs("#test-alert-btn").addEventListener("click", async () => { saveInputs(); const text = await analyze(); const result = await testAlert(text); state.lastBackend = result.ok ? "Test alert sent." : `Test alert failed: ${result.message || "unknown error"}`; persist(); render(); alert(state.lastBackend); });
+		qs("#run-ai-btn").addEventListener("click", async () => { saveInputs(); await analyze(); });
+		ui.panel.querySelectorAll("[data-theme-mode]").forEach((button) => button.addEventListener("click", function () { state.theme = this.dataset.themeMode || "system"; setVal(K.theme, state.theme); render(); }));
+		if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.theme === "system") render(); });
+	}
+
+	async function loop() {
 		const now = Date.now();
-		const refreshMs = state.config.refreshIntervalMin * 60 * 1000;
-		if (now - state.lastReloadTime >= refreshMs) {
-			GM_setValue("last_reload_time", now);
-			location.reload();
-			return;
-		}
-
-		if (
-			!state.isEvaluating &&
-			now - state.lastEvaluateAttemptAt >= CONFIG.sampleIntervalMs
-		) {
-			await evaluateSpend();
-		}
-
-		if (now - state.lastHeartbeatSentAt >= CONFIG.heartbeatIntervalMs) {
-			await sendHeartbeat(
-				state.lastCaptureStatus,
-				state.lastErrorMessage,
-			);
-		}
-
-		renderStatus();
+		if (now - state.lastReload >= state.cfg.refresh * 6e4) { state.lastReload = now; setVal(K.lr, state.lastReload); location.reload(); return; }
+		if (!state.evaluating && now - state.lastEval >= C.sampleMs) await evaluate();
+		if (now - state.lastHeartbeat >= C.heartbeatMs) await heartbeat(state.lastStatus, state.lastError);
+		render();
 	}
 
-	function bindStartup() {
-		addStyles();
-		createPanel();
-		renderStatus();
-
-		setTimeout(async () => {
-			await evaluateSpend();
-			await sendHeartbeat(
-				state.lastCaptureStatus,
-				state.lastErrorMessage,
-			);
-			setInterval(() => {
-				mainLoop().catch(() => {});
-			}, CONFIG.uiTickMs);
-		}, CONFIG.checkDelayMs);
+	function startup() {
+		addStyles(); createPanel(); bindDrag(); bindUI();
+		setTimeout(async () => { await evaluate(); await heartbeat(state.lastStatus, state.lastError); setInterval(() => { loop().catch(() => {}); }, C.uiTick); }, C.checkDelay);
 	}
 
-	$(document).ready(bindStartup);
+	$(document).ready(startup);
 })();

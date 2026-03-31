@@ -57,7 +57,9 @@ def ensure_database(db_path: Path) -> None:
                 last_error TEXT,
                 last_row_count INTEGER,
                 consecutive_error_count INTEGER NOT NULL DEFAULT 0,
-                health_status TEXT NOT NULL DEFAULT 'yellow'
+                health_status TEXT NOT NULL DEFAULT 'yellow',
+                alias TEXT,
+                remarks TEXT
             );
 
             CREATE TABLE IF NOT EXISTS script_heartbeats (
@@ -164,6 +166,14 @@ def ensure_database(db_path: Path) -> None:
                 ON alert_records(created_at DESC);
             """
         )
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(script_instances)").fetchall()
+        }
+        if "alias" not in columns:
+            conn.execute("ALTER TABLE script_instances ADD COLUMN alias TEXT")
+        if "remarks" not in columns:
+            conn.execute("ALTER TABLE script_instances ADD COLUMN remarks TEXT")
 
 
 def open_connection(db_path: Path) -> sqlite3.Connection:
@@ -767,6 +777,8 @@ def fetch_admin_instances(db_path: Path) -> list[dict]:
             """
             SELECT
                 instance_id,
+                alias,
+                remarks,
                 account_id,
                 account_name,
                 page_type,
@@ -780,7 +792,14 @@ def fetch_admin_instances(db_path: Path) -> list[dict]:
                 consecutive_error_count,
                 last_row_count
             FROM script_instances
-            ORDER BY COALESCE(last_heartbeat_at, last_seen_at, 0) DESC
+            ORDER BY
+                CASE health_status
+                    WHEN 'red' THEN 0
+                    WHEN 'yellow' THEN 1
+                    ELSE 2
+                END,
+                COALESCE(last_heartbeat_at, last_seen_at, 0) DESC,
+                COALESCE(last_capture_at, 0) DESC
             """
         ).fetchall()
 
@@ -958,8 +977,70 @@ def fetch_instance_detail(db_path: Path, instance_id: str) -> dict | None:
         detail["recent_alerts"] = fetch_alerts_for_instance(db_path, instance_id, limit=10)
         detail["recent_analyses"] = fetch_recent_analyses_for_instance(db_path, instance_id, limit=10)
         detail["capture_history"] = fetch_capture_history_for_instance(db_path, instance_id, limit=120)
+        latest_point = detail["capture_history"][-1] if detail["capture_history"] else None
+        detail["latest_current_spend"] = (
+            float(latest_point["current_spend"]) if latest_point else None
+        )
+        detail["latest_increase_amount"] = (
+            float(latest_point["increase_amount"]) if latest_point else None
+        )
         return detail
     return None
+
+
+def update_instance_metadata(
+    db_path: Path,
+    instance_id: str,
+    *,
+    alias: str | None,
+    remarks: str | None,
+) -> dict | None:
+    normalized_alias = (alias or "").strip() or None
+    normalized_remarks = (remarks or "").strip() or None
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT instance_id FROM script_instances WHERE instance_id = ?",
+            (instance_id,),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            """
+            UPDATE script_instances
+            SET alias = ?, remarks = ?
+            WHERE instance_id = ?
+            """,
+            (normalized_alias, normalized_remarks, instance_id),
+        )
+        updated = conn.execute(
+            """
+            SELECT instance_id, alias, remarks
+            FROM script_instances
+            WHERE instance_id = ?
+            """,
+            (instance_id,),
+        ).fetchone()
+    return dict(updated) if updated else None
+
+
+def delete_instance_records(db_path: Path, instance_id: str) -> bool:
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM script_instances WHERE instance_id = ?",
+            (instance_id,),
+        ).fetchone()
+        if not row:
+            return False
+        for table in (
+            "script_heartbeats",
+            "capture_events",
+            "error_reports",
+            "analysis_summaries",
+            "alert_records",
+            "script_instances",
+        ):
+            conn.execute(f"DELETE FROM {table} WHERE instance_id = ?", (instance_id,))
+    return True
 
 
 def fetch_admin_summary(db_path: Path) -> dict:

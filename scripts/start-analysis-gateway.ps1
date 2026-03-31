@@ -37,7 +37,18 @@ $env:ADBUDGET_HOST = $HostAddress
 $env:ADBUDGET_PORT = "$Port"
 $env:ADBUDGET_DB_PATH = $DbPath
 
+$RunDir = Join-Path $RepoRoot "run"
+New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+$PidFile = Join-Path $RunDir "analysis-gateway.pid"
+
 Write-Host "Starting Analysis Gateway on http://$HostAddress`:$Port"
 Push-Location $GatewayDir
-& $PythonExe app.py
+
+# 启动进程并保存 PID
+$process = Start-Process -FilePath $PythonExe -ArgumentList "app.py" -NoNewWindow -PassThru
+$process.Id | Out-File $PidFile -Encoding utf8
+Write-Host "Process started with PID: $($process.Id)"
+
+# 等待进程退出
+$process.WaitForExit()
 Pop-Location

@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Liquid Glass Demo A</title>
+  <style>
+    :root {
+      --bg-1: #06111f;
+      --bg-2: #0b1c33;
+      --bg-3: #0e3658;
+      --glass: rgba(170, 216, 255, 0.12);
+      --glass-strong: rgba(188, 227, 255, 0.18);
+      --line: rgba(202, 232, 255, 0.22);
+      --ink: #eaf6ff;
+      --muted: rgba(222, 239, 255, 0.72);
+      --cyan: #86edff;
+      --blue: #7dc3ff;
+      --green: #8ff3c5;
+      --yellow: #ffe28d;
+      --red: #ff9bb2;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 15% 15%, rgba(105, 211, 255, 0.18), transparent 22%),
+        radial-gradient(circle at 85% 12%, rgba(113, 170, 255, 0.2), transparent 18%),
+        radial-gradient(circle at 50% 100%, rgba(90, 255, 214, 0.12), transparent 22%),
+        linear-gradient(160deg, var(--bg-1), var(--bg-2) 48%, var(--bg-3));
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: radial-gradient(circle at center, black 40%, transparent 92%);
+      pointer-events: none;
+    }
+
+    .shell {
+      width: min(1400px, calc(100vw - 32px));
+      margin: 18px auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .glass {
+      background: linear-gradient(180deg, var(--glass-strong), var(--glass));
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(22px) saturate(150%);
+      -webkit-backdrop-filter: blur(22px) saturate(150%);
+    }
+
+    .hero {
+      padding: 24px;
+      border-radius: 32px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) 320px;
+      gap: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 420px;
+      height: 420px;
+      right: -110px;
+      top: -120px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(134, 237, 255, 0.22), transparent 70%);
+      filter: blur(10px);
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--muted);
+    }
+
+    h1 {
+      margin: 12px 0 10px;
+      font-size: clamp(34px, 5vw, 56px);
+      line-height: 0.98;
+      letter-spacing: -0.03em;
+    }
+
+    .hero p {
+      max-width: 760px;
+      margin: 0;
+      line-height: 1.8;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .tag-row,
+    .hero-actions,
+    .metric-row,
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .tag,
+    .action {
+      min-height: 40px;
+      padding: 0 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(214, 238, 255, 0.18);
+      background: rgba(255,255,255,0.08);
+      display: inline-flex;
+      align-items: center;
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .action.primary {
+      background: linear-gradient(135deg, rgba(134, 237, 255, 0.34), rgba(125, 195, 255, 0.16));
+      border-color: rgba(134, 237, 255, 0.28);
+    }
+
+    .summary-stack {
+      display: grid;
+      gap: 12px;
+      align-content: end;
+      position: relative;
+      z-index: 1;
+    }
+
+    .summary-card {
+      padding: 18px;
+      border-radius: 24px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(211, 235, 255, 0.18);
+    }
+
+    .summary-card strong {
+      display: block;
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .summary-card .big {
+      font-size: 28px;
+      font-weight: 800;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .metric {
+      padding: 18px;
+      border-radius: 24px;
+    }
+
+    .metric small {
+      display: block;
+      color: var(--muted);
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+
+    .metric strong {
+      font-size: 30px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .main {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) 380px;
+      gap: 18px;
+    }
+
+    .panel {
+      padding: 20px;
+      border-radius: 28px;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 16px;
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 22px;
+    }
+
+    .panel-sub {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .health-list {
+      display: grid;
+      gap: 14px;
+    }
+
+    .health-card {
+      padding: 16px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(212, 235, 255, 0.16);
+    }
+
+    .health-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .name {
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .pill {
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .pill.red { background: rgba(255, 155, 178, 0.14); color: var(--red); }
+    .pill.yellow { background: rgba(255, 226, 141, 0.14); color: var(--yellow); }
+    .pill.green { background: rgba(143, 243, 197, 0.14); color: var(--green); }
+
+    .mini-grid {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .mini {
+      padding: 10px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(211, 235, 255, 0.12);
+    }
+
+    .mini span {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .mini b {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .event-card {
+      padding: 16px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(212, 235, 255, 0.16);
+      display: grid;
+      gap: 10px;
+    }
+
+    .event-card .headline {
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
+    .event-card .meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1100px) {
+      .hero,
+      .main {
+        grid-template-columns: 1fr;
+      }
+
+      .metrics {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 700px) {
+      .shell {
+        width: min(100vw - 20px, 100%);
+        margin: 10px auto 20px;
+      }
+
+      .hero,
+      .panel {
+        padding: 16px;
+        border-radius: 24px;
+      }
+
+      .metrics {
+        grid-template-columns: 1fr;
+      }
+
+      .mini-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero glass">
+      <div style="position:relative;z-index:1;">
+        <div class="eyebrow">Demo A / Frost Command</div>
+        <h1>Liquid Glass<br />指挥台</h1>
+        <p>偏冷色、偏科幻、偏控制中心。透明面板层次更强，边缘高光更明显，信息区块带一点“悬浮舱”感，适合做后台监控首页。</p>
+        <div class="tag-row" style="margin-top:18px;">
+          <div class="tag">cold tech</div>
+          <div class="tag">high contrast glass</div>
+          <div class="tag">ops dashboard</div>
+        </div>
+        <div class="hero-actions" style="margin-top:18px;">
+          <div class="action primary">manual refresh</div>
+          <div class="action">theme: auto / dark</div>
+          <div class="action">instance health first</div>
+        </div>
+      </div>
+      <div class="summary-stack">
+        <div class="summary-card">
+          <strong>online matrix</strong>
+          <div class="big">27 instances</div>
+          <div class="sub">red 4 / yellow 9 / green 14</div>
+        </div>
+        <div class="summary-card">
+          <strong>alert traffic</strong>
+          <div class="big">89 alerts</div>
+          <div class="sub">push, model summary, heartbeat all in one surface</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="metrics">
+      <div class="metric glass"><small>online</small><strong style="color:var(--cyan);">27</strong></div>
+      <div class="metric glass"><small>healthy</small><strong style="color:var(--green);">14</strong></div>
+      <div class="metric glass"><small>observe</small><strong style="color:var(--yellow);">9</strong></div>
+      <div class="metric glass"><small>risk</small><strong style="color:var(--red);">4</strong></div>
+      <div class="metric glass"><small>analyses</small><strong style="color:var(--blue);">312</strong></div>
+      <div class="metric glass"><small>alerts</small><strong>89</strong></div>
+    </section>
+
+    <section class="main">
+      <section class="panel glass">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">实例健康列表</h2>
+            <div class="panel-sub">红黄绿风险优先排序，卡片点进去就是实例详情。</div>
+          </div>
+          <div class="action primary">refresh</div>
+        </div>
+
+        <div class="health-list">
+          <article class="health-card">
+            <div class="health-top">
+              <div>
+                <div class="name">Main Budget Alpha</div>
+                <div class="sub">remark: high-spend account / instance tm-a01</div>
+              </div>
+              <div class="pill red">RED</div>
+            </div>
+            <div class="mini-grid">
+              <div class="mini"><span>heartbeat</span><b>1m ago</b></div>
+              <div class="mini"><span>capture</span><b>4m ago</b></div>
+              <div class="mini"><span>delta</span><b>+3,420</b></div>
+              <div class="mini"><span>script</span><b>2.6.1</b></div>
+            </div>
+          </article>
+
+          <article class="health-card">
+            <div class="health-top">
+              <div>
+                <div class="name">Studio Feed Beta</div>
+                <div class="sub">remark: watch conversion quality / instance tm-b18</div>
+              </div>
+              <div class="pill yellow">YELLOW</div>
+            </div>
+            <div class="mini-grid">
+              <div class="mini"><span>heartbeat</span><b>3m ago</b></div>
+              <div class="mini"><span>capture</span><b>7m ago</b></div>
+              <div class="mini"><span>delta</span><b>+860</b></div>
+              <div class="mini"><span>script</span><b>2.6.1</b></div>
+            </div>
+          </article>
+
+          <article class="health-card">
+            <div class="health-top">
+              <div>
+                <div class="name">Warm Pool Gamma</div>
+                <div class="sub">remark: stable test lane / instance tm-c03</div>
+              </div>
+              <div class="pill green">GREEN</div>
+            </div>
+            <div class="mini-grid">
+              <div class="mini"><span>heartbeat</span><b>24s ago</b></div>
+              <div class="mini"><span>capture</span><b>1m ago</b></div>
+              <div class="mini"><span>delta</span><b>+135</b></div>
+              <div class="mini"><span>script</span><b>2.6.1</b></div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <aside class="panel glass">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">Signal Feed</h2>
+            <div class="panel-sub">更像控制中心侧栏。</div>
+          </div>
+        </div>
+
+        <div class="event-card">
+          <div class="headline">Threshold burst on Main Budget Alpha</div>
+          <div class="meta">12:31 / pushplus / threshold / severity high</div>
+        </div>
+        <div class="event-card">
+          <div class="headline">Model summary suggests low-quality traffic pattern</div>
+          <div class="meta">12:22 / deepseek / anomaly surge / score 0.91</div>
+        </div>
+        <div class="event-card">
+          <div class="headline">Manual note saved for Studio Feed Beta</div>
+          <div class="meta">12:18 / metadata update / alias + remark synced</div>
+        </div>
+      </aside>
+    </section>
+  </div>
+</body>
+</html>
