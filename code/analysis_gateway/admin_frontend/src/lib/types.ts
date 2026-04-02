@@ -66,6 +66,7 @@ export interface AdminCaptureHistoryPoint {
   captured_at: number
   current_spend: number
   increase_amount: number
+  baseline_increase_amount: number | null
   baseline_spend: number | null
   compare_interval_min: number | null
   notify_threshold: number | null

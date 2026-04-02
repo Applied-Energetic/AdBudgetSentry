@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from datetime import datetime
 from hashlib import sha1
 from pathlib import Path
 
@@ -656,6 +657,23 @@ def fetch_capture_history_for_instance(db_path: Path, instance_id: str, limit: i
             )
         except (TypeError, ValueError):
             continue
+
+    if not items:
+        return items
+
+    all_increases = [float(item["increase_amount"]) for item in items]
+    by_hour: dict[int, list[float]] = {}
+    for item in items:
+        hour = datetime.fromtimestamp(int(item["captured_at"]) / 1000).hour
+        by_hour.setdefault(hour, []).append(float(item["increase_amount"]))
+
+    fallback_baseline = sum(all_increases) / len(all_increases) if all_increases else 0.0
+    for item in items:
+        hour = datetime.fromtimestamp(int(item["captured_at"]) / 1000).hour
+        baseline_pool = by_hour.get(hour) or all_increases
+        baseline_value = sum(baseline_pool) / len(baseline_pool) if baseline_pool else fallback_baseline
+        item["baseline_increase_amount"] = round(baseline_value, 2)
+
     return items
 
 

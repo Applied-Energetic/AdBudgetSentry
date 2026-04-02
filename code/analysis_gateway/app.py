@@ -166,36 +166,64 @@ def build_prompt(request: AnalysisRequest, detection_summary) -> str:
     return f"""
 {context}
 
-当前事件：
-- 当前总消耗：{event.current_spend:.2f}
-- 窗口增量：{event.increase_amount:.2f}
-- 对比窗口：{event.compare_interval_min} 分钟
-- 预警阈值：{event.threshold:.2f}
-- 规则检测类型：{detection_summary.anomaly_type}
-- 规则严重度：{detection_summary.severity}
-- 规则分数：{detection_summary.score}
-- 附加指标：{metrics}
+Current monitoring event:
+- Current total spend: {event.current_spend:.2f}
+- Window increase: {event.increase_amount:.2f}
+- Compare window: {event.compare_interval_min} minutes
+- Alert threshold: {event.threshold:.2f}
+- Rule anomaly type: {detection_summary.anomaly_type}
+- Rule severity: {detection_summary.severity}
+- Rule score: {detection_summary.score}
+- Extra metrics: {metrics}
 
-规则证据：
+Rule evidence:
 {evidence_lines}
 
-请输出：
-请用纯文本输出，不要使用 Markdown、不要加粗、不要编号列表。
-请按以下四行输出：
-结论：这是正常爆量、低质流量嫌疑、还是暂时无法判断
-依据：写 2 到 3 条核心依据，合并成一行
-建议：继续观察 / 降预算 / 暂停计划 / 人工复核退款与场观
-提示：一句话风险提示
+You are an ad-spend anomaly monitoring assistant. Base your answer only on the provided metrics and rule evidence. Do not invent data. Do not directly conclude fraud, fake orders,?? or intentional platform traffic manipulation.
+
+Output exactly in this format:
+结论：one concise sentence
+原因判断：
+1. ...
+2. ...
+建议：
+1. ...
+2. ...
+
+Requirements:
+1. The conclusion must be clear and within one line.
+2. Reasoning must only use the given inputs and rule evidence.
+3. Suggestions must be concrete and executable for monitoring or troubleshooting.
+4. No greetings, no extra headings, no repetition of raw inputs.
+5. Keep the whole answer within 6 to 8 lines.
 """.strip()
 
 
 def fallback_text(detection_summary) -> str:
-    evidence = "；".join(detection_summary.evidence)
-    return (
-        f"规则判断为 {detection_summary.anomaly_type}，严重度 {detection_summary.severity}。"
-        f"证据：{evidence}。建议：{detection_summary.recommendation}"
+    evidence = "?".join(detection_summary.evidence[:2]) or "暂无额外规则证据"
+    return "\n".join(
+        [
+            f"结论：规则检测命中 {detection_summary.anomaly_type}，严重度 {detection_summary.severity}。",
+            "原因判断：",
+            f"1. {evidence}",
+            "建议：",
+            f"1. {detection_summary.recommendation}",
+        ]
     )
 
+
+def extract_analysis_summary(raw_text: str) -> str:
+    lines = [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    for line in lines:
+        if line.startswith("结论："):
+            return line.removeprefix("结论：").strip()
+        if line.startswith("结论:"):
+            return line.removeprefix("结论:").strip()
+
+    return lines[0]
 
 def format_time(timestamp_ms: int | None) -> str:
     if not timestamp_ms:
@@ -372,26 +400,19 @@ async def dispatch_pushplus_alert(
         return {"ok": False, "error": str(exc)}
 
 
-def build_threshold_alert_content(payload: dict, summary_text: str) -> tuple[str, str]:
+def build_threshold_alert_content(payload: dict) -> tuple[str, str]:
     metrics = payload.get("metrics") or {}
-    baseline_time = metrics.get("baseline_time") or payload.get("raw_context", {}).get("baseline_time")
-    baseline_text = format_time(int(baseline_time)) if baseline_time else "-"
+    account_name = payload.get("account_name") or "-"
     preview_lines = [
-        "消耗异常提醒",
-        *build_account_lines(payload.get("account_name"), payload.get("account_id")),
-        f"脚本实例：{payload.get('instance_id')}",
-        f"页面类型：{payload.get('page_type') or '-'}",
+        f"账号名称：{account_name}",
         f"当前总消耗：{float(metrics.get('current_spend') or 0):.2f} 元",
-        f"基线消耗：{float(metrics.get('baseline_spend') or 0):.2f} 元",
-        f"基线时间：{baseline_text}",
+        f"报警时间：{format_time(int(payload.get('captured_at') or utc_now_ms()))}",
         f"对比窗口：{int(metrics.get('compare_interval_min') or 0)} 分钟",
         f"窗口增量：{float(metrics.get('increase_amount') or 0):.2f} 元",
         f"阈值：{float(metrics.get('notify_threshold') or metrics.get('threshold') or 0):.2f} 元",
-        f"分析结果：{summary_text or '暂无分析结果'}",
     ]
-    title = f"【磁力金牛预警】{format_account_identity(payload.get('account_name'), payload.get('account_id'))}"
+    title = f"????????{format_account_identity(payload.get('account_name'), payload.get('account_id'))}"
     return title, "\n".join(preview_lines)
-
 
 async def maybe_send_threshold_alert(
     db_path: Path,
@@ -407,7 +428,7 @@ async def maybe_send_threshold_alert(
 
     config = load_config()
     alerts_config = get_alerts_config(config)
-    title, content_preview = build_threshold_alert_content(payload, summary_text)
+    title, content_preview = build_threshold_alert_content(payload)
     await dispatch_pushplus_alert(
         db_path,
         instance_id=payload["instance_id"],
@@ -616,7 +637,7 @@ async def analyze_ingest_payload(db_path: Path, payload: dict) -> None:
         try:
             provider = build_provider(config, provider_name)
             raw_text = (await run_provider(provider, build_prompt(request, detection_summary))).text
-            summary = raw_text.splitlines()[0].strip() if raw_text.strip() else fallback_text(detection_summary)
+            summary = extract_analysis_summary(raw_text) or fallback_text(detection_summary)
             provider_name_out = provider.provider_name
             model_out = provider.model
         except Exception as exc:  # noqa: BLE001
@@ -628,7 +649,7 @@ async def analyze_ingest_payload(db_path: Path, payload: dict) -> None:
         raw_text = fallback_text(detection_summary)
         if ai_enabled and detection_summary.anomaly_type in MODEL_TRIGGER_TYPES and is_cooldown_active:
             raw_text = f"{raw_text}\n\n模型分析处于冷却期，本次跳过。"
-        summary = raw_text
+        summary = extract_analysis_summary(raw_text) or fallback_text(detection_summary)
         provider_name_out = "rules"
         model_out = "fallback"
 
@@ -1257,7 +1278,7 @@ async def analyze(request: AnalysisRequest) -> AnalysisResponse:
         provider = build_provider(config, provider_name)
         raw_text = f"{fallback_text(detection_summary)}\n\n模型调用失败：{exc}"
 
-    summary = raw_text.splitlines()[0].strip() if raw_text.strip() else fallback_text(detection_summary)
+    summary = extract_analysis_summary(raw_text) or fallback_text(detection_summary)
 
     return AnalysisResponse(
         provider=provider.provider_name,

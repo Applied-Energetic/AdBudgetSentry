@@ -210,6 +210,7 @@ class AdminCaptureHistoryPoint(BaseModel):
     captured_at: int
     current_spend: float
     increase_amount: float = 0
+    baseline_increase_amount: float | None = None
     baseline_spend: float | None = None
     compare_interval_min: int | None = None
     notify_threshold: float | None = None

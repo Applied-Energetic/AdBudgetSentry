@@ -1,5 +1,5 @@
 import { Expand, Minimize2 } from "lucide-react"
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
+import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -18,6 +18,7 @@ export interface TrendChartPoint {
   timestamp: number
   label: string
   value: number
+  referenceValue?: number | null
 }
 
 interface TrendChartCardProps {
@@ -27,6 +28,8 @@ interface TrendChartCardProps {
   color: string
   emptyText: string
   valueLabel: string
+  referenceLabel?: string
+  referenceColor?: string
 }
 
 export function TrendChartCard({
@@ -36,6 +39,8 @@ export function TrendChartCard({
   color,
   emptyText,
   valueLabel,
+  referenceLabel,
+  referenceColor,
 }: TrendChartCardProps) {
   return (
     <Card className="soft-panel">
@@ -66,13 +71,27 @@ export function TrendChartCard({
               </div>
             </DialogHeader>
             <div className="h-[72vh] px-4 pb-4 pt-2 sm:px-6 sm:pb-6">
-              <TrendChartCanvas data={data} color={color} emptyText={emptyText} valueLabel={valueLabel} />
+              <TrendChartCanvas
+                data={data}
+                color={color}
+                emptyText={emptyText}
+                valueLabel={valueLabel}
+                referenceLabel={referenceLabel}
+                referenceColor={referenceColor}
+              />
             </div>
           </DialogContent>
         </Dialog>
       </CardHeader>
       <CardContent className="h-[320px] pt-2">
-        <TrendChartCanvas data={data} color={color} emptyText={emptyText} valueLabel={valueLabel} />
+        <TrendChartCanvas
+          data={data}
+          color={color}
+          emptyText={emptyText}
+          valueLabel={valueLabel}
+          referenceLabel={referenceLabel}
+          referenceColor={referenceColor}
+        />
       </CardContent>
     </Card>
   )
@@ -83,11 +102,15 @@ function TrendChartCanvas({
   color,
   emptyText,
   valueLabel,
+  referenceLabel,
+  referenceColor,
 }: {
   data: TrendChartPoint[]
   color: string
   emptyText: string
   valueLabel: string
+  referenceLabel?: string
+  referenceColor?: string
 }) {
   if (data.length < 2) {
     return (
@@ -112,7 +135,10 @@ function TrendChartCanvas({
         <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={10} minTickGap={24} />
         <YAxis tickLine={false} axisLine={false} width={62} tickFormatter={(value: number) => formatDecimal(value)} />
         <Tooltip
-          formatter={(value) => [`${formatDecimal(Number(value))} ${valueLabel}`, valueLabel]}
+          formatter={(value, name) => {
+            const label = String(name || valueLabel)
+            return [`${formatDecimal(Number(value))} ${valueLabel}`, label]
+          }}
           labelFormatter={(label) => `时间：${String(label ?? "-")}`}
           cursor={{ stroke: color, strokeOpacity: 0.25, strokeDasharray: "4 4" }}
           contentStyle={{
@@ -125,12 +151,27 @@ function TrendChartCanvas({
         <Area
           type="monotone"
           dataKey="value"
+          name={valueLabel}
           stroke={color}
           fill={`url(#${gradientId})`}
           strokeWidth={2.5}
           activeDot={{ r: 4, strokeWidth: 0, fill: color }}
           isAnimationActive={false}
         />
+        {referenceLabel ? (
+          <Line
+            type="monotone"
+            dataKey="referenceValue"
+            name={referenceLabel}
+            stroke={referenceColor ?? "var(--color-muted-foreground)"}
+            strokeWidth={2}
+            strokeDasharray="6 6"
+            dot={false}
+            activeDot={{ r: 3 }}
+            connectNulls
+            isAnimationActive={false}
+          />
+        ) : null}
       </AreaChart>
     </ResponsiveContainer>
   )

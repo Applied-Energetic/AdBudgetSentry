@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import app as gateway_app
+from database import ensure_database, save_ingest_event
+
+
+class AnalysisAndAlertsTests(unittest.TestCase):
+    def test_build_threshold_alert_content_keeps_only_core_fields(self) -> None:
+        title, preview = gateway_app.build_threshold_alert_content(
+            {
+                "account_name": "电旗店",
+                "account_id": "acct-1",
+                "captured_at": 1_712_000_000_000,
+                "metrics": {
+                    "current_spend": 746.04,
+                    "compare_interval_min": 10,
+                    "increase_amount": 48.52,
+                    "notify_threshold": 20,
+                },
+            }
+        )
+
+        self.assertIn("电旗店", title)
+        self.assertIn("账号名称：电旗店", preview)
+        self.assertIn("当前总消耗：746.04 元", preview)
+        self.assertIn("报警时间：", preview)
+        self.assertIn("对比窗口：10 分钟", preview)
+        self.assertIn("窗口增量：48.52 元", preview)
+        self.assertIn("阈值：20.00 元", preview)
+        self.assertNotIn("分析结果", preview)
+        self.assertNotIn("实例", preview)
+        self.assertNotIn("页面类型", preview)
+        self.assertNotIn("基线", preview)
+
+    def test_extract_summary_prefers_conclusion_line(self) -> None:
+        raw_text = "\n".join(
+            [
+                "结论：10 分钟窗口消耗异常放大，建议立即关注投放计划。",
+                "原因判断：1. 当前窗口增量显著高于分时段基线。",
+                "建议：1. 继续观察后续 10 分钟趋势。",
+            ]
+        )
+
+        summary = gateway_app.extract_analysis_summary(raw_text)
+
+        self.assertEqual(summary, "10 分钟窗口消耗异常放大，建议立即关注投放计划。")
+
+    def test_extract_summary_falls_back_to_first_non_empty_line(self) -> None:
+        raw_text = "\n\n规则判断：threshold_breach\n建议：继续观察"
+
+        summary = gateway_app.extract_analysis_summary(raw_text)
+
+        self.assertEqual(summary, "规则判断：threshold_breach")
+
+    def test_fetch_capture_history_adds_hourly_baseline(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db_path = Path(tmp) / "app.db"
+            ensure_database(db_path)
+
+            base_payload = {
+                "instance_id": "inst-1",
+                "account_id": "acct-1",
+                "account_name": "电旗店",
+                "page_type": "financial",
+                "page_url": "https://example.test",
+                "script_version": "1.0.0",
+                "row_count": 3,
+                "raw_context": {},
+            }
+            captured_times = [1_712_004_000_000, 1_712_004_600_000, 1_712_004_900_000]
+            increases = [10.0, 20.0, 40.0]
+            spends = [100.0, 120.0, 160.0]
+
+            for captured_at, increase_amount, current_spend in zip(captured_times, increases, spends):
+                save_ingest_event(
+                    db_path,
+                    {
+                        **base_payload,
+                        "captured_at": captured_at,
+                        "metrics": {
+                            "current_spend": current_spend,
+                            "increase_amount": increase_amount,
+                            "compare_interval_min": 10,
+                            "notify_threshold": 20,
+                        },
+                    },
+                )
+
+            history = gateway_app.fetch_capture_history_for_instance(db_path, "inst-1", limit=10)
+
+            self.assertEqual(len(history), 3)
+            self.assertAlmostEqual(history[0]["baseline_increase_amount"], 23.33, places=2)
+            self.assertAlmostEqual(history[1]["baseline_increase_amount"], 23.33, places=2)
+            self.assertAlmostEqual(history[2]["baseline_increase_amount"], 23.33, places=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

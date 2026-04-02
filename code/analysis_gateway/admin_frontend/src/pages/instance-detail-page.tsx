@@ -81,6 +81,7 @@ export function InstanceDetailPage() {
         timestamp: item.captured_at,
         label: formatShortTime(item.captured_at),
         value: item.increase_amount,
+        referenceValue: item.baseline_increase_amount ?? null,
       })),
     [historyPoints],
   )
@@ -248,6 +249,8 @@ export function InstanceDetailPage() {
           description="默认展示从当前时间往回最近 12 小时窗口波动，用于观察短周期异常抬升。"
           data={increaseAmountChartData}
           color="var(--color-chart-2)"
+          referenceLabel="?????"
+          referenceColor="var(--color-chart-4)"
           emptyText={`当前时间往回最近 12 小时内采样点不足，暂时无法生成 ${windowMinutes} 分钟窗口趋势图。`}
           valueLabel="元"
         />

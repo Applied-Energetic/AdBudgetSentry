@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         AdBudgetSentry Panel
+// @name         磁力金牛财务报警助手
 // @namespace    http://tampermonkey.net/
 // @version      2.6.1
-// @description  Floating finance monitor panel with capture, alert, AI analysis, settings, and theme switch
+// @description  磁力金牛悬浮监控面板，支持采集、告警、AI 分析、设置和主题切换
 // @author       Codex
 // @match        https://niu.e.kuaishou.com/financial/record*
 // @match        https://niu.e.kuaishou.com/*
@@ -24,7 +24,7 @@
 	const getVal = (k, d) => { const v = GM_getValue(k, d); return v === undefined || v === null ? d : v; };
 	const setVal = (k, v) => GM_setValue(k, v);
 	const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-	const fmtMoney = (v) => `${Number(v || 0).toFixed(2)} CNY`;
+	const fmtMoney = (v) => `${Number(v || 0).toFixed(2)} 元`;
 	const backendBase = (v) => String(v || C.backend).trim().replace(/\/analyze$/i, "").replace(/\/$/, "") || C.backend;
 
 	const state = {
@@ -38,7 +38,7 @@
 		lastEval: Number(getVal(K.la, 0)) || 0,
 		lastReload: Number(getVal(K.lr, Date.now())) || Date.now(),
 		lastAnalysis: String(getVal(K.lt, "")),
-		lastBackend: String(getVal(K.lm, "Backend idle")),
+		lastBackend: String(getVal(K.lm, "后端空闲")),
 		lastHeartbeat: Number(getVal(K.lh, 0)) || 0,
 		lastStatus: String(getVal(K.st, "warning")),
 		lastError: String(getVal(K.le, "")),
@@ -63,8 +63,8 @@
 	const put = (sel, text) => { const el = qs(sel); if (el) el.textContent = text; };
 
 	const pageType = () => location.pathname.includes("/financial/record") ? "financial" : location.pathname.includes("/manage") ? "manage" : location.pathname.includes("/superManage") ? "super-manage" : "unknown";
-	function accountId() { if (state.cfg.accountId) return state.cfg.accountId; const q = new URLSearchParams(location.search); for (const k of ["accountId", "account_id", "advertiserId", "advertiser_id", "cid"]) { const v = q.get(k); if (v) return v; } return "unknown-account"; }
-	function accountName() { if (state.cfg.accountName) return state.cfg.accountName; for (const s of [".account-info-name", ".account-name", "[class*='Account'] [class*='name']", "header [class*='name']"]) { const el = document.querySelector(s); const txt = el ? el.textContent.trim() : ""; if (txt) return txt; } return document.title || "Unknown account"; }
+	function accountId() { if (state.cfg.accountId) return state.cfg.accountId; const q = new URLSearchParams(location.search); for (const k of ["accountId", "account_id", "advertiserId", "advertiser_id", "cid"]) { const v = q.get(k); if (v) return v; } return "未知账号"; }
+	function accountName() { if (state.cfg.accountName) return state.cfg.accountName; for (const s of [".account-info-name", ".account-name", "[class*='Account'] [class*='name']", "header [class*='name']"]) { const el = document.querySelector(s); const txt = el ? el.textContent.trim() : ""; if (txt) return txt; } return document.title || "未知账号"; }
 	function rows() { for (const s of ["#root section section main table tbody tr", ".ant-table-tbody tr.ant-table-row", ".ant-table-row"]) { const els = document.querySelectorAll(s); if (els.length) return els; } return []; }
 	function scrapeSpend() { const d = new Date(); const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; for (const row of rows()) { const cells = row.querySelectorAll("td"); if (cells.length < 2) continue; const txt = cells[0].textContent.trim(); if (txt === ds || txt.includes(ds)) return parseFloat(String(cells[1].textContent).replace(/[^\d.-]/g, "")) || 0; } return -1; }
 	async function scrapeSpendRetry() { let spend = -1; for (let i = 0; i < C.retryCount; i += 1) { spend = scrapeSpend(); if (spend >= 0) return spend; if (i < C.retryCount - 1) await sleep(C.retryDelay); } return spend; }
@@ -85,11 +85,11 @@
 		ui.panel.dataset.theme = effectiveTheme();
 		put("#metric-total", fmtMoney(state.current));
 		put("#metric-window", fmtMoney(state.increase));
-		put("#metric-window-label", `${state.cfg.compare} min delta`);
+		put("#metric-window-label", `${state.cfg.compare} 分钟窗口增量`);
 		const left = Math.max(0, Math.floor((state.lastReload + state.cfg.refresh * 6e4 - Date.now()) / 1e3));
 		put("#refresh-countdown", `${String(Math.floor(left / 60)).padStart(2, "0")}:${String(left % 60).padStart(2, "0")}`);
 		put("#theme-badge", `${state.theme}/${effectiveTheme()}`);
-		put("#instance-id", state.id); put("#backend-status", state.lastBackend); put("#account-name", accountName()); put("#account-id", accountId()); put("#page-type", pageType()); put("#analysis-output", state.lastAnalysis || "Waiting for AI analysis.");
+		put("#instance-id", state.id); put("#backend-status", state.lastBackend); put("#account-name", accountName()); put("#account-id", accountId()); put("#page-type", pageType()); put("#analysis-output", state.lastAnalysis || "等待 AI 分析结果。");
 		ui.panel.querySelectorAll("[data-theme-mode]").forEach((btn) => { btn.dataset.active = String(btn.dataset.themeMode === state.theme); });
 	}
 
@@ -103,40 +103,40 @@
 	}
 
 	async function analyze() {
-		if (!state.cfg.aiEnabled) { state.lastAnalysis = "AI disabled."; setVal(K.lt, state.lastAnalysis); render(); return state.lastAnalysis; }
+		if (!state.cfg.aiEnabled) { state.lastAnalysis = "AI 分析已关闭。"; setVal(K.lt, state.lastAnalysis); render(); return state.lastAnalysis; }
 		try {
-			const response = await request(`${state.cfg.backend}/analyze`, { provider_override: state.cfg.aiProvider, event: { current_spend: state.current, increase_amount: state.increase, compare_interval_min: state.cfg.compare, threshold: state.cfg.threshold, baseline_time: state.baseTime, event_time: Date.now(), extra_metrics: { baseline_spend: state.base, samples: state.history.length } }, history: state.history.map((x) => ({ timestamp: x.time, spend: x.spend })), business_context: [`Account: ${accountName()}`, `Account ID: ${accountId()}`, `Instance: ${state.id}`, `Page: ${pageType()}`, `URL: ${location.href}`].join("\n") });
+			const response = await request(`${state.cfg.backend}/analyze`, { provider_override: state.cfg.aiProvider, event: { current_spend: state.current, increase_amount: state.increase, compare_interval_min: state.cfg.compare, threshold: state.cfg.threshold, baseline_time: state.baseTime, event_time: Date.now(), extra_metrics: { baseline_spend: state.base, samples: state.history.length } }, history: state.history.map((x) => ({ timestamp: x.time, spend: x.spend })), business_context: [`账号名称：${accountName()}`, `账号 ID：${accountId()}`, `实例 ID：${state.id}`, `页面类型：${pageType()}`, `页面地址：${location.href}`].join("\n") });
 			const body = JSON.parse(response.responseText || "{}");
-			state.lastAnalysis = body.raw_text || body.summary || "Empty AI response.";
-		} catch (error) { state.lastAnalysis = `AI failed: ${error?.error || error?.message || "unknown error"}`; }
+			state.lastAnalysis = body.raw_text || body.summary || "AI 未返回内容。";
+		} catch (error) { state.lastAnalysis = `AI 分析失败：${error?.error || error?.message || "未知错误"}`; }
 		setVal(K.lt, state.lastAnalysis); render(); return state.lastAnalysis;
 	}
 
 	async function heartbeat(status = state.lastStatus, errorMessage = state.lastError) {
-		try { await request(`${state.cfg.backend}/heartbeat`, { ...ctx(), heartbeat_at: Date.now(), browser_visible: document.visibilityState === "visible", capture_status: status, last_capture_at: state.lastCheck || null, error_message: errorMessage || null }); state.lastHeartbeat = Date.now(); state.lastBackend = `Heartbeat ${new Date().toLocaleTimeString()}`; }
-		catch (error) { state.lastBackend = `Heartbeat failed: ${error?.error || error?.message || "unknown error"}`; }
+		try { await request(`${state.cfg.backend}/heartbeat`, { ...ctx(), heartbeat_at: Date.now(), browser_visible: document.visibilityState === "visible", capture_status: status, last_capture_at: state.lastCheck || null, error_message: errorMessage || null }); state.lastHeartbeat = Date.now(); state.lastBackend = `心跳已上报 ${new Date().toLocaleTimeString()}`; }
+		catch (error) { state.lastBackend = `心跳上报失败：${error?.error || error?.message || "未知错误"}`; }
 		persist(); render();
 	}
 
 	async function reportError(type, message) { try { await request(`${state.cfg.backend}/error`, { instance_id: state.id, occurred_at: Date.now(), error_type: type, error_message: message, page_url: location.href, script_version: (typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "unknown" }); } catch (_) {} }
-	async function testAlert(text) { try { const response = await request(`${state.cfg.backend}/alerts/test`, { ...ctx(), current_spend: state.current, increase_amount: state.increase, compare_interval_min: state.cfg.compare, baseline_spend: state.base || null, baseline_time: state.baseTime || null, analysis_text: text || "", triggered_at: Date.now() }); return JSON.parse(response.responseText || "{}"); } catch (error) { return { ok: false, message: error?.error || error?.message || "unknown error" }; } }
+	async function testAlert(text) { try { const response = await request(`${state.cfg.backend}/alerts/test`, { ...ctx(), current_spend: state.current, increase_amount: state.increase, compare_interval_min: state.cfg.compare, baseline_spend: state.base || null, baseline_time: state.baseTime || null, analysis_text: text || "", triggered_at: Date.now() }); return JSON.parse(response.responseText || "{}"); } catch (error) { return { ok: false, message: error?.error || error?.message || "未知错误" }; } }
 
 	async function evaluate() {
 		if (state.evaluating) return; state.evaluating = true; state.lastEval = Date.now(); setVal(K.la, state.lastEval);
 		try {
 			const spend = await scrapeSpendRetry();
-			if (spend < 0) { const msg = "Daily spend row not found."; state.lastStatus = "warning"; state.lastError = msg; state.lastBackend = msg; persist(); render(); await heartbeat("warning", msg); return; }
-			state.current = spend; pushHistory(spend); const base = baseline(); state.base = base.spend; state.baseTime = base.time; state.increase = Math.max(0, spend - base.spend); state.lastCheck = Date.now(); state.lastStatus = "success"; state.lastError = ""; state.lastBackend = `Capture ok ${new Date().toLocaleTimeString()}`; persist(); render();
+			if (spend < 0) { const msg = "未找到当日消耗行。"; state.lastStatus = "warning"; state.lastError = msg; state.lastBackend = msg; persist(); render(); await heartbeat("warning", msg); return; }
+			state.current = spend; pushHistory(spend); const base = baseline(); state.base = base.spend; state.baseTime = base.time; state.increase = Math.max(0, spend - base.spend); state.lastCheck = Date.now(); state.lastStatus = "success"; state.lastError = ""; state.lastBackend = `采集成功 ${new Date().toLocaleTimeString()}`; persist(); render();
 			await request(`${state.cfg.backend}/ingest`, { ...ctx(), captured_at: Date.now(), metrics: { current_spend: state.current, increase_amount: state.increase, baseline_spend: state.base, compare_interval_min: state.cfg.compare, notify_threshold: state.cfg.threshold }, raw_context: { history_samples: state.history.length, baseline_time: state.baseTime, ai_enabled: state.cfg.aiEnabled, ai_provider: state.cfg.aiProvider } });
 		} catch (error) {
-			const msg = `Capture failed: ${error?.message || "unknown error"}`; state.lastStatus = "error"; state.lastError = msg; state.lastBackend = msg; persist(); render(); await reportError("capture_error", msg); await heartbeat("error", msg);
+			const msg = `采集失败：${error?.message || "未知错误"}`; state.lastStatus = "error"; state.lastError = msg; state.lastBackend = msg; persist(); render(); await reportError("capture_error", msg); await heartbeat("error", msg);
 		} finally { state.evaluating = false; }
 	}
 
 	function createPanel() {
 		const panel = document.createElement("div");
 		panel.id = C.id;
-		panel.innerHTML = `<div class="head"><div><div style="font-size:15px;font-weight:800;">AdBudgetSentry</div><div style="font-size:11px;opacity:.82;">single-instance monitor panel</div></div><div><div id="theme-badge" style="font-size:12px;text-align:right;">theme</div><div style="font-size:12px;text-align:right;">reload <span id="refresh-countdown">--:--</span></div></div></div><div class="body"><div class="grid"><div class="metric"><div class="small">today total</div><div class="big" id="metric-total">-</div></div><div class="metric"><div class="small" id="metric-window-label">30 min delta</div><div class="big" id="metric-window">-</div></div></div><div class="card"><div class="small">account</div><div id="account-name"></div><div class="small" style="margin-top:8px;">account id</div><div id="account-id"></div><div class="small" style="margin-top:8px;">page</div><div id="page-type"></div><div class="small" style="margin-top:8px;">instance</div><div id="instance-id"></div><div class="small" style="margin-top:8px;">backend</div><div id="backend-status"></div></div><div class="analysis" id="analysis-output">Waiting for AI analysis.</div><div class="toggle" id="toggle-config-btn">Open settings</div><div class="config" id="config-wrap"><div class="grid"><div><label>backend</label><input id="backend-base-url" type="text" /></div><div><label>account name override</label><input id="account-name-override" type="text" /></div><div><label>account id override</label><input id="account-id-override" type="text" /></div><div><label>refresh minutes</label><input id="refresh-interval" type="number" min="1" /></div><div><label>compare minutes</label><input id="compare-interval" type="number" min="1" /></div><div><label>alert threshold</label><input id="notify-threshold" type="number" min="0" /></div><div><label>AI enabled</label><select id="ai-enabled"><option value="true">true</option><option value="false">false</option></select></div><div><label>AI provider</label><select id="ai-provider"><option value="local">local</option><option value="deepseek">deepseek</option></select></div></div><div class="theme" style="margin-top:10px;"><button type="button" data-theme-mode="system">system</button><button type="button" data-theme-mode="light">light</button><button type="button" data-theme-mode="dark">dark</button></div><div class="actions" style="margin-top:10px;"><button type="button" class="primary" id="save-config-btn">save</button><button type="button" class="soft" id="manual-refresh-btn">refresh</button><button type="button" class="warn" id="test-alert-btn">test alert</button><button type="button" class="soft" id="reset-history-btn">reset history</button><button type="button" class="soft" id="run-ai-btn">run AI</button></div><div class="subtle">Default theme follows the system. Mobile uses a narrow layout with larger tap targets.</div></div></div>`;
+		panel.innerHTML = `<div class="head"><div><div style="font-size:15px;font-weight:800;">磁力金牛财务报警助手</div><div style="font-size:11px;opacity:.82;">单实例投流监控面板</div></div><div><div id="theme-badge" style="font-size:12px;text-align:right;">主题</div><div style="font-size:12px;text-align:right;">刷新 <span id="refresh-countdown">--:--</span></div></div></div><div class="body"><div class="grid"><div class="metric"><div class="small">今日总消耗</div><div class="big" id="metric-total">-</div></div><div class="metric"><div class="small" id="metric-window-label">30 分钟窗口增量</div><div class="big" id="metric-window">-</div></div></div><div class="card"><div class="small">账号名称</div><div id="account-name"></div><div class="small" style="margin-top:8px;">账号 ID</div><div id="account-id"></div><div class="small" style="margin-top:8px;">页面类型</div><div id="page-type"></div><div class="small" style="margin-top:8px;">实例 ID</div><div id="instance-id"></div><div class="small" style="margin-top:8px;">后端状态</div><div id="backend-status"></div></div><div class="analysis" id="analysis-output">等待 AI 分析结果。</div><div class="toggle" id="toggle-config-btn">打开设置</div><div class="config" id="config-wrap"><div class="grid"><div><label>后端地址</label><input id="backend-base-url" type="text" /></div><div><label>账号名称覆盖</label><input id="account-name-override" type="text" /></div><div><label>账号 ID 覆盖</label><input id="account-id-override" type="text" /></div><div><label>刷新间隔（分钟）</label><input id="refresh-interval" type="number" min="1" /></div><div><label>对比窗口（分钟）</label><input id="compare-interval" type="number" min="1" /></div><div><label>报警阈值</label><input id="notify-threshold" type="number" min="0" /></div><div><label>是否启用 AI</label><select id="ai-enabled"><option value="true">启用</option><option value="false">关闭</option></select></div><div><label>AI 提供方</label><select id="ai-provider"><option value="local">本地模型</option><option value="deepseek">DeepSeek</option></select></div></div><div class="theme" style="margin-top:10px;"><button type="button" data-theme-mode="system">跟随系统</button><button type="button" data-theme-mode="light">浅色</button><button type="button" data-theme-mode="dark">深色</button></div><div class="actions" style="margin-top:10px;"><button type="button" class="primary" id="save-config-btn">保存设置</button><button type="button" class="soft" id="manual-refresh-btn">立即刷新</button><button type="button" class="warn" id="test-alert-btn">测试报警</button><button type="button" class="soft" id="reset-history-btn">重置历史</button><button type="button" class="soft" id="run-ai-btn">执行 AI 分析</button></div><div class="subtle">默认主题跟随系统。移动端会自动切换为更适合点击的窄屏布局。</div></div></div>`;
 		document.body.appendChild(panel); ui.panel = panel; loadInputs(); render();
 		if (state.pos.left && state.pos.top) { panel.style.right = "auto"; panel.style.left = state.pos.left; panel.style.top = state.pos.top; }
 	}
@@ -153,11 +153,11 @@
 	}
 
 	function bindUI() {
-		qs("#toggle-config-btn").addEventListener("click", function () { const wrap = qs("#config-wrap"); const visible = wrap.style.display === "grid"; wrap.style.display = visible ? "none" : "grid"; this.textContent = visible ? "Open settings" : "Close settings"; });
-		qs("#save-config-btn").addEventListener("click", () => { saveInputs(); render(); alert("Saved."); });
+		qs("#toggle-config-btn").addEventListener("click", function () { const wrap = qs("#config-wrap"); const visible = wrap.style.display === "grid"; wrap.style.display = visible ? "none" : "grid"; this.textContent = visible ? "打开设置" : "收起设置"; });
+		qs("#save-config-btn").addEventListener("click", () => { saveInputs(); render(); alert("设置已保存。"); });
 		qs("#manual-refresh-btn").addEventListener("click", () => { state.lastReload = Date.now(); setVal(K.lr, state.lastReload); location.reload(); });
-		qs("#reset-history-btn").addEventListener("click", () => { state.history = []; state.base = 0; state.baseTime = 0; state.current = 0; state.increase = 0; state.lastCheck = 0; state.lastEval = 0; state.lastAnalysis = ""; setVal(K.h, []); setVal(K.lt, ""); persist(); render(); alert("History reset."); });
-		qs("#test-alert-btn").addEventListener("click", async () => { saveInputs(); const text = await analyze(); const result = await testAlert(text); state.lastBackend = result.ok ? "Test alert sent." : `Test alert failed: ${result.message || "unknown error"}`; persist(); render(); alert(state.lastBackend); });
+		qs("#reset-history-btn").addEventListener("click", () => { state.history = []; state.base = 0; state.baseTime = 0; state.current = 0; state.increase = 0; state.lastCheck = 0; state.lastEval = 0; state.lastAnalysis = ""; setVal(K.h, []); setVal(K.lt, ""); persist(); render(); alert("历史数据已重置。"); });
+		qs("#test-alert-btn").addEventListener("click", async () => { saveInputs(); const text = await analyze(); const result = await testAlert(text); state.lastBackend = result.ok ? "测试报警已发送。" : `测试报警失败：${result.message || "未知错误"}`; persist(); render(); alert(state.lastBackend); });
 		qs("#run-ai-btn").addEventListener("click", async () => { saveInputs(); await analyze(); });
 		ui.panel.querySelectorAll("[data-theme-mode]").forEach((button) => button.addEventListener("click", function () { state.theme = this.dataset.themeMode || "system"; setVal(K.theme, state.theme); render(); }));
 		if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (state.theme === "system") render(); });
