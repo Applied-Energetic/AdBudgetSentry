@@ -7,6 +7,7 @@ import mimetypes
 import io
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from models import (
     AdminCaptureHistoryPoint,
     AdminInstanceDetail,
     AdminInstanceSummary,
+    AdminSystemSettings,
     AdminSummary,
     AnalysisRequest,
     AnalysisEvent,
@@ -50,8 +52,14 @@ from models import (
     HistoryPoint,
     HeartbeatRequest,
     InstanceMetadataResponse,
+    InstanceChatRequest,
+    InstanceChatResponse,
     IngestRequest,
+    ProviderConnectivityResponse,
+    ProviderSettings,
+    PushplusSettings,
     TestAlertRequest,
+    UpdateAdminSystemSettingsRequest,
     UpdateInstanceMetadataRequest,
 )
 from providers import OpenAICompatibleProvider, ProviderResult
@@ -109,6 +117,128 @@ def get_alerts_config(config: dict | None = None) -> dict:
 
 def get_pushplus_config(config: dict | None = None) -> dict:
     return get_alerts_config(config)["pushplus"]
+
+
+def save_config(config: dict) -> None:
+    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def mask_token(token: str | None) -> str | None:
+    raw = (token or "").strip()
+    if not raw:
+        return None
+    if len(raw) <= 8:
+        return "*" * len(raw)
+    return f"{raw[:4]}...{raw[-4:]}"
+
+
+def build_admin_settings(config: dict | None = None) -> AdminSystemSettings:
+    config = config or load_config()
+    pushplus = get_pushplus_config(config)
+    deepseek = config.get("deepseek") or {}
+    local = config.get("local") or {}
+    token = str(pushplus.get("token") or "")
+
+    return AdminSystemSettings(
+        default_provider=config.get("default_provider", "deepseek"),
+        deepseek=ProviderSettings(
+            base_url=str(deepseek.get("base_url") or ""),
+            model=str(deepseek.get("model") or ""),
+            api_key="",
+        ),
+        local=ProviderSettings(
+            base_url=str(local.get("base_url") or ""),
+            model=str(local.get("model") or ""),
+            api_key="",
+        ),
+        pushplus=PushplusSettings(
+            enabled=bool(pushplus.get("enabled", True)),
+            channel=str(pushplus.get("channel") or "mail"),
+            channel_option=str(pushplus.get("option") or ""),
+            has_token=bool(token),
+            token_preview=mask_token(token),
+            token="",
+        ),
+    )
+
+
+def update_system_settings(request: UpdateAdminSystemSettingsRequest) -> AdminSystemSettings:
+    existing = load_config()
+
+    existing["default_provider"] = request.default_provider
+    existing["deepseek"] = {
+        **(existing.get("deepseek") or {}),
+        "base_url": request.deepseek.base_url.strip(),
+        "model": request.deepseek.model.strip(),
+        "api_key": request.deepseek.api_key.strip() or (existing.get("deepseek") or {}).get("api_key", ""),
+    }
+    existing["local"] = {
+        **(existing.get("local") or {}),
+        "base_url": request.local.base_url.strip(),
+        "model": request.local.model.strip(),
+        "api_key": request.local.api_key.strip() or (existing.get("local") or {}).get("api_key", ""),
+    }
+
+    alerts = dict(existing.get("alerts") or {})
+    pushplus = dict(alerts.get("pushplus") or {})
+    pushplus.update(
+        {
+            "enabled": request.pushplus.enabled,
+            "channel": request.pushplus.channel.strip() or "mail",
+            "option": request.pushplus.channel_option.strip(),
+        }
+    )
+    if request.pushplus.token.strip():
+        pushplus["token"] = request.pushplus.token.strip()
+    alerts["pushplus"] = pushplus
+    existing["alerts"] = alerts
+
+    save_config(existing)
+    return build_admin_settings(existing)
+
+
+def build_provider_test_prompt() -> str:
+    return (
+        "请执行一次连通性测试，并用一句中文短句回复当前模型可用。"
+        "不要展开解释，不要使用 Markdown，只返回测试结果。"
+    )
+
+
+def build_instance_chat_context(detail: dict, history: list[dict]) -> str:
+    latest_history = list(reversed(history[-12:]))
+    history_lines = [
+        f"- {format_time(item.get('captured_at'))} / 总消耗 {item.get('current_spend') or 0:.2f} / "
+        f"窗口增量 {item.get('increase_amount') or 0:.2f} / 阈值 {item.get('notify_threshold') or 0:.2f}"
+        for item in latest_history
+    ] or ["- 暂无最近采样"]
+    recent_alerts = detail.get("recent_alerts", [])[:5]
+    alert_lines = [
+        f"- {format_time(item.get('triggered_at'))} / {item.get('alert_kind') or '-'} / {item.get('title') or '-'}"
+        for item in recent_alerts
+    ] or ["- 暂无最近告警"]
+    recent_analyses = detail.get("recent_analyses", [])[:5]
+    analysis_lines = [
+        f"- {format_time(item.get('created_at'))} / {item.get('summary') or '-'}"
+        for item in recent_analyses
+    ] or ["- 暂无最近分析"]
+
+    return "\n".join(
+        [
+            "当前实例上下文：",
+            f"实例 ID：{detail.get('instance_id') or '-'}",
+            f"账号：{format_account_identity(detail.get('account_name'), detail.get('account_id'))}",
+            f"页面类型：{detail.get('page_type') or '-'}",
+            f"健康状态：{detail.get('health_status') or '-'}",
+            f"最新总消耗：{detail.get('latest_current_spend') or 0:.2f}",
+            f"最新窗口增量：{detail.get('latest_increase_amount') or 0:.2f}",
+            "最近采样：",
+            *history_lines,
+            "最近告警：",
+            *alert_lines,
+            "最近分析：",
+            *analysis_lines,
+        ]
+    )
 
 
 def parse_date_start_ms(value: str) -> int | None:
@@ -273,7 +403,7 @@ def build_chip(label: str, tone: str) -> str:
 def build_account_lines(account_name: str | None, account_id: str | None) -> list[str]:
     lines = [f"账号名称：{account_name or '未识别账号'}"]
     if not is_missing_account_id(account_id):
-        lines.append(f"账号ID：{account_id}")
+        lines.append(f"账号 ID：{account_id}")
     return lines
 
 
@@ -362,7 +492,7 @@ async def dispatch_pushplus_alert(
         return {"ok": False, "skipped": True, "reason": "missing_pushplus_token"}
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
             response = await client.post(
                 "https://www.pushplus.plus/send",
                 json={
@@ -411,7 +541,7 @@ def build_threshold_alert_content(payload: dict) -> tuple[str, str]:
         f"窗口增量：{float(metrics.get('increase_amount') or 0):.2f} 元",
         f"阈值：{float(metrics.get('notify_threshold') or metrics.get('threshold') or 0):.2f} 元",
     ]
-    title = f"????????{format_account_identity(payload.get('account_name'), payload.get('account_id'))}"
+    title = f"【磁力金牛告警】{format_account_identity(payload.get('account_name'), payload.get('account_id'))}"
     return title, "\n".join(preview_lines)
 
 async def maybe_send_threshold_alert(
@@ -1031,6 +1161,63 @@ def admin_summary() -> AdminSummary:
     return AdminSummary(**fetch_admin_summary(get_db_path()))
 
 
+@app.get("/admin/api/settings", response_model=AdminSystemSettings)
+def admin_settings_api() -> AdminSystemSettings:
+    return build_admin_settings()
+
+
+@app.post("/admin/api/settings", response_model=AdminSystemSettings)
+def admin_update_settings_api(request: UpdateAdminSystemSettingsRequest) -> AdminSystemSettings:
+    return update_system_settings(request)
+
+
+@app.post("/admin/api/settings/pushplus/test", response_model=ApiAck)
+async def admin_test_pushplus() -> ApiAck:
+    settings = build_admin_settings()
+    result = await dispatch_pushplus_alert(
+        get_db_path(),
+        {
+            "instance_id": "admin-settings",
+            "account_name": "系统设置页",
+            "account_id": "settings",
+            "alert_kind": "test",
+            "severity": "low",
+            "anomaly_type": "manual_test",
+            "triggered_at": utc_now_ms(),
+        },
+        title="PushPlus 测试消息",
+        content_preview=(
+            "账号名称：系统设置页\n"
+            "当前总消耗：0.00 元\n\n"
+            "报警时间：测试消息\n"
+            "对比窗口：0 分钟\n\n"
+            "窗口增量：0.00 元\n\n"
+            "阈值：0.00 元"
+        ),
+        cooldown_ms=0,
+    )
+    if result.get("ok"):
+        return ApiAck(message="pushplus test sent", server_time=utc_now_ms())
+    if result.get("skipped"):
+        return ApiAck(ok=False, message=f"pushplus test skipped: {result.get('reason')}", server_time=utc_now_ms())
+    return ApiAck(ok=False, message=f"pushplus test failed: {result.get('error') or 'unknown'}", server_time=utc_now_ms())
+
+
+@app.post("/admin/api/settings/deepseek/test", response_model=ProviderConnectivityResponse)
+async def admin_test_deepseek() -> ProviderConnectivityResponse:
+    config = load_config()
+    provider = build_provider(config, "deepseek")
+    started = time.perf_counter()
+    result = await run_provider(provider, build_provider_test_prompt())
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    return ProviderConnectivityResponse(
+        provider=result.provider,
+        model=result.model,
+        message=result.text,
+        latency_ms=latency_ms,
+    )
+
+
 @app.get("/admin/instances", response_model=list[AdminInstanceSummary])
 def admin_instances() -> list[AdminInstanceSummary]:
     return [AdminInstanceSummary(**item) for item in fetch_admin_instances(get_db_path())]
@@ -1165,6 +1352,35 @@ def admin_instance_history_api(instance_id: str, limit: int = 120) -> list[Admin
     return [AdminCaptureHistoryPoint(**item) for item in history]
 
 
+@app.post("/admin/api/instances/{instance_id}/chat", response_model=InstanceChatResponse)
+async def admin_instance_chat_api(instance_id: str, request: InstanceChatRequest) -> InstanceChatResponse:
+    db_path = get_db_path()
+    detail = fetch_instance_detail(db_path, instance_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Instance not found")
+
+    history = fetch_capture_history_for_instance(db_path, instance_id, limit=60)
+    context = build_instance_chat_context(detail, history)
+    config = load_config()
+    provider_name = config.get("default_provider", "deepseek")
+    provider = build_provider(config, provider_name)
+    prompt = "\n\n".join(
+        [
+            context,
+            "用户问题：",
+            request.message.strip(),
+            "请基于当前实例上下文回答，优先给出判断、原因和可执行建议；不要编造未提供的数据。",
+        ]
+    )
+    result = await run_provider(provider, prompt)
+    return InstanceChatResponse(
+        provider=result.provider,
+        model=result.model,
+        reply=result.text,
+        context_preview=context,
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def home() -> HTMLResponse:
     db_path = get_db_path()
@@ -1221,6 +1437,74 @@ def admin_alerts_page(
             date_to=date_to,
         )
     )
+
+
+@app.get("/admin/settings", response_class=HTMLResponse)
+def admin_settings_page() -> HTMLResponse:
+    spa_response = render_admin_frontend_index()
+    if spa_response is not None:
+        return spa_response
+
+    settings = build_admin_settings()
+    provider_cards = []
+    for label, provider in [("DeepSeek", settings.deepseek), ("本地模型", settings.local)]:
+        provider_cards.append(
+            "".join(
+                [
+                    '<div style="border:1px solid rgba(148,163,184,.24);border-radius:16px;padding:16px;background:#fff;">',
+                    f'<div style="font-weight:700;font-size:16px;">{html.escape(label)}</div>',
+                    f'<div style="margin-top:8px;color:#475569;">Base URL：{html.escape(provider.base_url)}</div>',
+                    f'<div style="margin-top:6px;color:#475569;">Model：{html.escape(provider.model)}</div>',
+                    "</div>",
+                ]
+            )
+        )
+
+    body = f"""
+    <!doctype html>
+    <html lang="zh-CN">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>系统设置 - AdBudgetSentry</title>
+        <style>
+          body {{ font-family: "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }}
+          .page {{ max-width: 960px; margin: 0 auto; padding: 32px 20px 48px; }}
+          .hero {{ background: linear-gradient(135deg,#0f766e,#1e293b); color: #fff; padding: 28px; border-radius: 24px; }}
+          .card {{ margin-top: 20px; background: #fff; border: 1px solid rgba(148,163,184,.24); border-radius: 20px; padding: 24px; }}
+          .grid {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }}
+          .row {{ margin-top: 10px; color: #475569; }}
+          .token {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+          a {{ color: #0f766e; text-decoration: none; }}
+        </style>
+      </head>
+      <body>
+        <main class="page">
+          <section class="hero">
+            <div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;opacity:.82;">Settings</div>
+            <h1 style="margin:10px 0 8px;">系统设置</h1>
+            <div style="line-height:1.7;max-width:700px;">当前环境未找到 React 打包产物，因此暂时回退到后端渲染页。PushPlus 的发送、DeepSeek 的调用都由 FastAPI 后端发起，保存配置后后续请求会自动读取新配置。</div>
+            <div style="margin-top:14px;"><a href="/admin" style="color:#fff;">返回总览</a></div>
+          </section>
+          <section class="card">
+            <h2 style="margin-top:0;">PushPlus</h2>
+            <div class="row">启用状态：{"已启用" if settings.pushplus.enabled else "已关闭"}</div>
+            <div class="row">发送通道：{html.escape(settings.pushplus.channel)}</div>
+            <div class="row">通道参数：{html.escape(settings.pushplus.channel_option or "-")}</div>
+            <div class="row">Token：<span class="token">{html.escape(settings.pushplus.token_preview or "未配置")}</span></div>
+          </section>
+          <section class="card">
+            <h2 style="margin-top:0;">模型与提供方</h2>
+            <div class="row">默认提供方：{html.escape(settings.default_provider)}</div>
+            <div class="grid" style="margin-top:16px;">
+              {''.join(provider_cards)}
+            </div>
+          </section>
+        </main>
+      </body>
+    </html>
+    """
+    return HTMLResponse(body)
 
 
 @app.get("/admin/instances/{instance_id}", response_class=HTMLResponse)

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import app as gateway_app
-from database import ensure_database, save_ingest_event
+from database import ensure_database, fetch_alerts_for_instance, save_ingest_event
 
 
 class AnalysisAndAlertsTests(unittest.TestCase):
@@ -96,6 +98,77 @@ class AnalysisAndAlertsTests(unittest.TestCase):
             self.assertAlmostEqual(history[0]["baseline_increase_amount"], 23.33, places=2)
             self.assertAlmostEqual(history[1]["baseline_increase_amount"], 23.33, places=2)
             self.assertAlmostEqual(history[2]["baseline_increase_amount"], 23.33, places=2)
+
+    def test_dispatch_pushplus_alert_disables_env_proxy(self) -> None:
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json() -> dict:
+                return {"code": 200}
+
+        client_kwargs: dict[str, object] = {}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                client_kwargs.update(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            async def post(self, *args, **kwargs):
+                return FakeResponse()
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db_path = Path(tmp) / "app.db"
+            ensure_database(db_path)
+
+            with (
+                patch.object(
+                    gateway_app,
+                    "load_config",
+                    return_value={
+                        "alerts": {
+                            "enabled": True,
+                            "pushplus": {
+                                "enabled": True,
+                                "token": "token-123",
+                                "channel": "mail",
+                                "option": "",
+                            },
+                        }
+                    },
+                ),
+                patch.object(gateway_app, "fetch_latest_alert_for_instance_kind", return_value=None),
+                patch.object(gateway_app.httpx, "AsyncClient", FakeClient),
+            ):
+                result = asyncio.run(
+                    gateway_app.dispatch_pushplus_alert(
+                        db_path,
+                        instance_id="inst-1",
+                        account_id="acct-1",
+                        account_name="旗舰店",
+                        page_type="finance",
+                        page_url="https://example.test",
+                        script_version="1.0.0",
+                        alert_kind="threshold",
+                        title="测试标题",
+                        content_preview="测试内容",
+                        content_html="<p>测试内容</p>",
+                        severity="high",
+                        anomaly_type="threshold_breach",
+                        triggered_at=1_712_000_000_000,
+                        cooldown_ms=0,
+                    )
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(client_kwargs.get("trust_env"), False)
+            saved_alerts = fetch_alerts_for_instance(db_path, "inst-1", limit=1)
+            self.assertEqual(saved_alerts[0]["send_status"], "sent")
 
 
 if __name__ == "__main__":

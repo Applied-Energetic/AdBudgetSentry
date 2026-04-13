@@ -1,0 +1,115 @@
+<mxfile host="app.diagrams.net" modified="2026-04-12T00:00:00.000Z" agent="Codex" version="24.7.17">
+  <diagram id="adbudget-architecture" name="Architecture">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="1080" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="browser" value="浏览器侧" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF3FF;strokeColor=#4C78A8;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="320" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="local" value="本机 / Windows 主机" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EDF8F1;strokeColor=#4E9A65;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="410" y="80" width="900" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="external" value="外部服务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F7F1FB;strokeColor=#8F63B8;fontStyle=1;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="1360" y="80" width="480" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="ops" value="运营 / 管理员" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4C78A8;" vertex="1" parent="1">
+          <mxGeometry x="80" y="140" width="110" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="kuaishou" value="快手磁力金牛页面&#xa;financial / manage / super-manage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4C78A8;" vertex="1" parent="1">
+          <mxGeometry x="80" y="250" width="240" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="tm" value="Tampermonkey 用户脚本&#xa;磁力金牛财务报警助手.user.js&#xa;- DOM 采集&#xa;- 本地配置/历史&#xa;- GM_xmlhttpRequest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D8E9FF;strokeColor=#4C78A8;" vertex="1" parent="1">
+          <mxGeometry x="80" y="390" width="240" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="gateway" value="FastAPI Analysis Gateway&#xa;app.py&#xa;- 采集接入 API&#xa;- 管理 API&#xa;- 页面入口&#xa;- 告警/AI 调用" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F2E3;strokeColor=#4E9A65;" vertex="1" parent="1">
+          <mxGeometry x="470" y="160" width="260" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="db" value="SQLite&#xa;data/app.db&#xa;script_instances&#xa;capture_events&#xa;alert_records..." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1CC;strokeColor=#D79B00;" vertex="1" parent="1">
+          <mxGeometry x="810" y="160" width="220" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="rule" value="规则异常检测&#xa;anomaly.py&#xa;surge / threshold_breach / stalled" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F2E3;strokeColor=#4E9A65;" vertex="1" parent="1">
+          <mxGeometry x="470" y="390" width="220" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="ssr" value="后端渲染管理页&#xa;admin_ui.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F2E3;strokeColor=#4E9A65;" vertex="1" parent="1">
+          <mxGeometry x="760" y="390" width="160" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="spa" value="React Admin Frontend&#xa;admin_frontend/dist&#xa;- Dashboard&#xa;- Alerts&#xa;- Settings&#xa;- Instance Detail" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F2E3;strokeColor=#4E9A65;" vertex="1" parent="1">
+          <mxGeometry x="980" y="390" width="240" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="job" value="后台健康巡检 / 告警任务&#xa;- offline/failure cooldown&#xa;- PushPlus 发送" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F2E3;strokeColor=#4E9A65;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="160" width="190" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="cf" value="Cloudflare Tunnel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#8F63B8;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="140" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="public" value="公网管理域名" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#8F63B8;" vertex="1" parent="1">
+          <mxGeometry x="1660" y="140" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="pushplus" value="PushPlus&#xa;告警通知" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#8F63B8;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="280" width="150" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="deepseek" value="DeepSeek API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#8F63B8;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="420" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="localmodel" value="本地 OpenAI 兼容模型&#xa;例如 Ollama / 127.0.0.1:11434" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#8F63B8;" vertex="1" parent="1">
+          <mxGeometry x="1650" y="410" width="160" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" value="使用/查看" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4C78A8;" edge="1" parent="1" source="ops" target="kuaishou">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="页面注入 / DOM 采集" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#4C78A8;" edge="1" parent="1" source="tm" target="kuaishou">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="/ingest&#xa;/heartbeat&#xa;/error&#xa;/alerts/test&#xa;/analyze" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2F6B48;strokeWidth=2;" edge="1" parent="1" source="tm" target="gateway">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="读写实例 / 心跳 / 采集 / 告警 / 分析" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#B36B00;strokeWidth=2;" edge="1" parent="1" source="gateway" target="db">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="规则判定" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2F6B48;" edge="1" parent="1" source="gateway" target="rule">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="SSR 回退页面" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2F6B48;" edge="1" parent="1" source="gateway" target="ssr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="静态资源 / SPA 入口" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2F6B48;" edge="1" parent="1" source="gateway" target="spa">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="健康巡检 / 冷却控制" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#2F6B48;" edge="1" parent="1" source="gateway" target="job">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="推送告警" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#8F63B8;" edge="1" parent="1" source="job" target="pushplus">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="analyze / instance chat" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#8F63B8;" edge="1" parent="1" source="gateway" target="deepseek">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="本地模型接入" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#8F63B8;" edge="1" parent="1" source="gateway" target="localmodel">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="Tunnel 暴露" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;strokeColor=#8F63B8;" edge="1" parent="1" source="cf" target="gateway">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" value="HTTPS 访问" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;strokeColor=#8F63B8;" edge="1" parent="1" source="public" target="cf">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="legendTitle" value="图例" style="text;html=1;strokeColor=none;fillColor=none;fontStyle=1;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="40" y="690" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1" value="蓝色：浏览器侧" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D8E9FF;strokeColor=#4C78A8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="730" width="150" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2" value="绿色：本地业务系统" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D9F2E3;strokeColor=#4E9A65;" vertex="1" parent="1">
+          <mxGeometry x="210" y="730" width="170" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3" value="黄色：数据存储" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1CC;strokeColor=#D79B00;" vertex="1" parent="1">
+          <mxGeometry x="400" y="730" width="150" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="legend4" value="紫色：外部服务 / 公网入口" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E8FF;strokeColor=#8F63B8;" vertex="1" parent="1">
+          <mxGeometry x="570" y="730" width="200" height="36" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

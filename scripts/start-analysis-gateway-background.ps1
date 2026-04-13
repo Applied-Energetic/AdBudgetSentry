@@ -41,13 +41,17 @@ if ($EnsureDeps) {
     $argList += "-EnsureDeps"
 }
 
-$process = Start-Process -FilePath "powershell.exe" `
-    -ArgumentList $argList `
-    -WindowStyle Hidden `
-    -WorkingDirectory $RepoRoot `
-    -RedirectStandardOutput $StdoutLog `
-    -RedirectStandardError $StderrLog `
-    -PassThru
+# `Start-Process` can fail on Windows when the parent shell exposes both
+# `Path` and `PATH`. Launch via ProcessStartInfo to avoid that dictionary
+# collision while keeping the process detached in the background.
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = "powershell.exe"
+$psi.Arguments = ($argList -join " ")
+$psi.WorkingDirectory = $RepoRoot
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+
+$process = [System.Diagnostics.Process]::Start($psi)
 
 Set-Content -Path $PidFile -Value $process.Id -Encoding ASCII
 Write-Host "Analysis Gateway started in background. PID=$($process.Id)"

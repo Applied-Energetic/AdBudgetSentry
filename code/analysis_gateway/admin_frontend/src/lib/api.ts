@@ -1,11 +1,15 @@
 import type {
+  ApiAck,
   AdminAlertRecord,
   AdminCaptureHistoryPoint,
   AdminInstanceDetail,
   AdminInstanceSummary,
+  InstanceChatResponse,
+  AdminSystemSettings,
   AdminSummary,
   AlertsFilters,
   DashboardPayload,
+  ProviderConnectivityResponse,
 } from "@/lib/types"
 
 const API_BASE_URL = (import.meta.env.VITE_ADMIN_API_BASE_URL ?? "").replace(/\/$/, "")
@@ -100,6 +104,42 @@ export const adminApi = {
   async deleteInstance(instanceId: string) {
     return fetchJson(`/admin/api/instances/${encodeURIComponent(instanceId)}`, {
       method: "DELETE",
+    })
+  },
+
+  async getSettings(): Promise<AdminSystemSettings> {
+    return fetchJson<AdminSystemSettings>("/admin/api/settings")
+  },
+
+  async updateSettings(payload: AdminSystemSettings): Promise<AdminSystemSettings> {
+    return fetchJson<AdminSystemSettings>("/admin/api/settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async testPushplus(): Promise<ApiAck> {
+    return fetchJson<ApiAck>("/admin/api/settings/pushplus/test", {
+      method: "POST",
+    })
+  },
+
+  async testDeepseek(): Promise<ProviderConnectivityResponse> {
+    return fetchJson<ProviderConnectivityResponse>("/admin/api/settings/deepseek/test", {
+      method: "POST",
+    })
+  },
+
+  async chatWithInstance(instanceId: string, message: string): Promise<InstanceChatResponse> {
+    return fetchJson<InstanceChatResponse>(`/admin/api/instances/${encodeURIComponent(instanceId)}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message }),
     })
   },
 

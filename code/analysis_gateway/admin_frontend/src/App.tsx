@@ -4,6 +4,7 @@ import { AdminShell } from "@/components/admin-shell"
 import { AlertsPage } from "@/pages/alerts-page"
 import { DashboardPage } from "@/pages/dashboard-page"
 import { InstanceDetailPage } from "@/pages/instance-detail-page"
+import { SettingsPage } from "@/pages/settings-page"
 
 function App() {
   return (
@@ -13,6 +14,7 @@ function App() {
         <Route path="/admin" element={<AdminShell />}>
           <Route index element={<DashboardPage />} />
           <Route path="alerts" element={<AlertsPage />} />
+          <Route path="settings" element={<SettingsPage />} />
           <Route path="instances/:instanceId" element={<InstanceDetailPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/admin" replace />} />

@@ -147,6 +147,55 @@ class InstanceMetadataResponse(BaseModel):
     remarks: str | None = None
 
 
+class ProviderSettings(BaseModel):
+    base_url: str = Field(..., min_length=1)
+    model: str = Field(..., min_length=1)
+    api_key: str = ""
+
+
+class PushplusSettings(BaseModel):
+    enabled: bool = True
+    channel: str = Field(default="mail", min_length=1)
+    channel_option: str = ""
+    has_token: bool = False
+    token_preview: str | None = None
+    token: str = ""
+
+
+class AdminSystemSettings(BaseModel):
+    default_provider: ProviderName
+    deepseek: ProviderSettings
+    local: ProviderSettings
+    pushplus: PushplusSettings
+
+
+class UpdateAdminSystemSettingsRequest(BaseModel):
+    default_provider: ProviderName
+    deepseek: ProviderSettings
+    local: ProviderSettings
+    pushplus: PushplusSettings
+
+
+class ProviderConnectivityResponse(BaseModel):
+    ok: bool = True
+    provider: str
+    model: str
+    message: str
+    latency_ms: int | None = None
+
+
+class InstanceChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+
+
+class InstanceChatResponse(BaseModel):
+    ok: bool = True
+    provider: str
+    model: str
+    reply: str
+    context_preview: str
+
+
 class AdminInstanceSummary(BaseModel):
     instance_id: str
     alias: str | None = None

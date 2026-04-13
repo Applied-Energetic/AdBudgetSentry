@@ -8,34 +8,87 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { adminApi } from "@/lib/api"
-import { compactText, formatAccountIdentity, formatAlertKind, formatDateTime } from "@/lib/format"
+import { compactText, formatAccountIdentity, formatAlertKind, formatDateTime, formatDisplayName } from "@/lib/format"
 import type { AdminAlertRecord, AlertsFilters } from "@/lib/types"
+import { cn } from "@/lib/utils"
+
+function getTodayRange() {
+  const today = new Date()
+  const value = today.toLocaleDateString("en-CA")
+  return { dateFrom: value, dateTo: value }
+}
 
 const defaultFilters: AlertsFilters = {
   accountKeyword: "",
   sendStatus: "",
   alertKind: "",
-  dateFrom: "",
-  dateTo: "",
+  ...getTodayRange(),
 }
 
 export function AlertsPage() {
   const [filters, setFilters] = useState<AlertsFilters>(defaultFilters)
   const [alerts, setAlerts] = useState<AdminAlertRecord[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [selectedInstanceId, setSelectedInstanceId] = useState<string>("")
 
   const load = async () => {
     try {
       setError(null)
       setAlerts(await adminApi.getAlerts(filters))
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "加载失败")
+      setError(loadError instanceof Error ? loadError.message : "加载告警记录失败")
     }
   }
 
   useEffect(() => {
-    void load()
+    let active = true
+
+    void adminApi
+      .getAlerts(filters)
+      .then((result) => {
+        if (!active) return
+        setError(null)
+        setAlerts(result)
+      })
+      .catch((loadError) => {
+        if (!active) return
+        setError(loadError instanceof Error ? loadError.message : "加载告警记录失败")
+      })
+
+    return () => {
+      active = false
+    }
   }, [filters])
+
+  const instanceOptions = useMemo(() => {
+    const seen = new Set<string>()
+    const options: Array<{ instanceId: string; label: string; hint: string; count: number }> = []
+
+    alerts.forEach((alert) => {
+      if (!alert.instance_id || seen.has(alert.instance_id)) return
+      seen.add(alert.instance_id)
+
+      const related = alerts.filter((item) => item.instance_id === alert.instance_id)
+      options.push({
+        instanceId: alert.instance_id,
+        label: formatDisplayName(alert.account_name, alert.account_id),
+        hint: alert.page_type || alert.instance_id,
+        count: related.length,
+      })
+    })
+
+    return options
+  }, [alerts])
+
+  const visibleAlerts = useMemo(() => {
+    const activeInstanceId =
+      selectedInstanceId && instanceOptions.some((item) => item.instanceId === selectedInstanceId)
+        ? selectedInstanceId
+        : (instanceOptions[0]?.instanceId ?? "")
+
+    if (!activeInstanceId) return alerts
+    return alerts.filter((item) => item.instance_id === activeInstanceId)
+  }, [alerts, instanceOptions, selectedInstanceId])
 
   const stats = useMemo(() => {
     const sent = alerts.filter((item) => item.send_status === "sent").length
@@ -43,6 +96,13 @@ export function AlertsPage() {
     const skipped = alerts.filter((item) => item.send_status === "skipped").length
     return { sent, failed, skipped }
   }, [alerts])
+
+  const activeInstanceId =
+    selectedInstanceId && instanceOptions.some((item) => item.instanceId === selectedInstanceId)
+      ? selectedInstanceId
+      : (instanceOptions[0]?.instanceId ?? "")
+
+  const selectedInstance = instanceOptions.find((item) => item.instanceId === activeInstanceId) ?? null
 
   return (
     <div className="space-y-6">
@@ -53,7 +113,7 @@ export function AlertsPage() {
             <CardDescription>按账户关键词、发送状态、告警类型和日期范围筛选历史告警。</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => setFilters(defaultFilters)}>
+            <Button variant="outline" onClick={() => setFilters({ ...defaultFilters })}>
               <RotateCcw className="size-4" />
               清空
             </Button>
@@ -83,7 +143,7 @@ export function AlertsPage() {
               <SelectValue placeholder="发送状态" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="all">全部</SelectItem>
               <SelectItem value="sent">已发送</SelectItem>
               <SelectItem value="failed">发送失败</SelectItem>
               <SelectItem value="skipped">已跳过</SelectItem>
@@ -115,31 +175,31 @@ export function AlertsPage() {
       </section>
 
       <Card className="soft-panel">
-        <CardHeader>
-          <CardTitle>告警历史</CardTitle>
-          <CardDescription>默认最多展示 500 条记录，便于在单页内回看与导出。</CardDescription>
+        <CardHeader className="gap-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <CardTitle>告警历史</CardTitle>
+              <CardDescription>
+                默认展示今天的全部告警，并自动定位到第一个实例。下方可快速切换实例视角。
+              </CardDescription>
+            </div>
+            {selectedInstance ? (
+              <div className="rounded-2xl bg-muted/65 px-4 py-3 text-right">
+                <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">当前实例</div>
+                <div className="mt-1 text-sm font-semibold text-foreground">{selectedInstance.label}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{selectedInstance.count} 条记录</div>
+              </div>
+            ) : null}
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? <div className="text-sm text-rose-600 dark:text-rose-300">{error}</div> : null}
 
           <div className="space-y-3 md:hidden">
-            {alerts.map((alert) => (
-              <div key={alert.id} className="rounded-2xl border border-border/70 bg-background/90 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="font-medium">{alert.title}</div>
-                  <AlertStatusBadge status={alert.send_status} />
-                  <AlertSeverityBadge severity={alert.severity} />
-                </div>
-                <div className="mt-2 text-sm text-muted-foreground">
-                  {formatAccountIdentity(alert.account_name, alert.account_id)}
-                </div>
-                <div className="mt-1 text-sm text-muted-foreground">
-                  {formatAlertKind(alert.alert_kind)} / {formatDateTime(alert.triggered_at)}
-                </div>
-                <div className="mt-2 text-sm leading-6 text-foreground">{compactText(alert.content_preview, 120)}</div>
-              </div>
+            {visibleAlerts.map((alert) => (
+              <AlertHistoryCard key={alert.id} alert={alert} />
             ))}
-            {alerts.length === 0 ? (
+            {visibleAlerts.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border/80 px-4 py-10 text-center text-sm text-muted-foreground">
                 当前筛选条件下没有告警记录。
               </div>
@@ -159,11 +219,11 @@ export function AlertsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {alerts.map((alert) => (
+                {visibleAlerts.map((alert) => (
                   <TableRow key={alert.id}>
                     <TableCell className="whitespace-normal">
                       <div className="font-medium">{alert.title}</div>
-                      <div className="mt-1 text-sm text-muted-foreground">{compactText(alert.content_preview, 90)}</div>
+                      <div className="mt-1 text-sm text-muted-foreground">{compactText(alert.content_preview, 120)}</div>
                     </TableCell>
                     <TableCell className="whitespace-normal">
                       {formatAccountIdentity(alert.account_name, alert.account_id)}
@@ -178,7 +238,7 @@ export function AlertsPage() {
                     <TableCell>{formatDateTime(alert.triggered_at)}</TableCell>
                   </TableRow>
                 ))}
-                {alerts.length === 0 ? (
+                {visibleAlerts.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="whitespace-normal py-10 text-center text-muted-foreground">
                       当前筛选条件下没有告警记录。
@@ -188,6 +248,32 @@ export function AlertsPage() {
               </TableBody>
             </Table>
           </div>
+
+          {instanceOptions.length > 0 ? (
+            <div className="instance-switcher">
+              {instanceOptions.map((item) => {
+                const active = item.instanceId === activeInstanceId
+                return (
+                  <button
+                    key={item.instanceId}
+                    type="button"
+                    onClick={() => setSelectedInstanceId(item.instanceId)}
+                    className={cn(
+                      "rounded-full border px-4 py-2 text-left transition-colors",
+                      active
+                        ? "border-primary/30 bg-primary text-primary-foreground shadow-[0_8px_24px_rgba(13,148,136,0.22)]"
+                        : "border-border/70 bg-background/90 text-foreground hover:bg-muted/70",
+                    )}
+                  >
+                    <span className="block text-sm font-medium">{item.label}</span>
+                    <span className={cn("block text-xs", active ? "text-primary-foreground/80" : "text-muted-foreground")}>
+                      {item.hint} · {item.count} 条
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </div>
@@ -203,5 +289,22 @@ function StatCard({ title, value, hint }: { title: string; value: string; hint: 
       </CardHeader>
       <CardContent className="text-sm text-muted-foreground">{hint}</CardContent>
     </Card>
+  )
+}
+
+function AlertHistoryCard({ alert }: { alert: AdminAlertRecord }) {
+  return (
+    <div className="record-card">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="font-medium">{alert.title}</div>
+        <AlertStatusBadge status={alert.send_status} />
+        <AlertSeverityBadge severity={alert.severity} />
+      </div>
+      <div className="mt-2 text-sm text-muted-foreground">{formatAccountIdentity(alert.account_name, alert.account_id)}</div>
+      <div className="mt-1 text-sm text-muted-foreground">
+        {formatAlertKind(alert.alert_kind)} / {formatDateTime(alert.triggered_at)}
+      </div>
+      <div className="mt-2 text-sm leading-6 text-foreground">{compactText(alert.content_preview, 160)}</div>
+    </div>
   )
 }

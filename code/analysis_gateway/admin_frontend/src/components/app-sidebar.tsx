@@ -1,4 +1,4 @@
-import { AlertTriangle, LayoutDashboard, Server } from "lucide-react"
+import { AlertTriangle, LayoutDashboard, Server, Settings } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Link, useLocation } from "react-router-dom"
 
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils"
 const navigationItems = [
   { title: "总览", href: "/admin", icon: LayoutDashboard, exact: true },
   { title: "告警", href: "/admin/alerts", icon: AlertTriangle },
+  { title: "系统设置", href: "/admin/settings", icon: Settings },
 ]
 
 export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
@@ -19,7 +20,10 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const [instances, setInstances] = useState<AdminInstanceSummary[]>([])
 
   useEffect(() => {
-    void adminApi.getInstances().then((items) => setInstances(items.slice(0, 6))).catch(() => setInstances([]))
+    void adminApi
+      .getInstances()
+      .then((items) => setInstances(items.slice(0, 6)))
+      .catch(() => setInstances([]))
   }, [])
 
   return (
@@ -28,11 +32,13 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-[11px] font-semibold tracking-[0.22em] text-muted-foreground">ADBUDGET</div>
-            <div className="mt-1 text-lg font-semibold">监控后台</div>
+            <div className="mt-1 text-lg font-semibold">管理后台</div>
           </div>
           <Badge className="rounded-full bg-primary px-2.5 py-0.5 text-primary-foreground">V1</Badge>
         </div>
-        <p className="mt-3 text-sm leading-6 text-muted-foreground">统一查看实例健康度、账户消耗异常和告警投递状态。</p>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          统一查看实例状态、异常告警、分析结果和系统配置。
+        </p>
       </div>
 
       <nav className="space-y-1 px-3 pb-4">
@@ -59,13 +65,14 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="border-t border-sidebar-border px-5 pt-4">
-        <div className="mb-3 text-[11px] font-semibold tracking-[0.18em] text-muted-foreground">重点实例</div>
+        <div className="mb-3 text-[11px] font-semibold tracking-[0.18em] text-muted-foreground">最近实例</div>
         <div className="space-y-2">
           {instances.length === 0 ? (
             <div className="rounded-2xl border border-sidebar-border/80 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
-              暂无实例
+              暂无实例数据
             </div>
           ) : null}
+
           {instances.map((instance) => {
             const href = `/admin/instances/${instance.instance_id}`
             const isActive = location.pathname === href

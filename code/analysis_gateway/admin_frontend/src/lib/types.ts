@@ -109,6 +109,51 @@ export interface DashboardPayload {
   alerts: AdminAlertRecord[]
 }
 
+export interface ProviderSettings {
+  base_url: string
+  model: string
+  api_key: string
+}
+
+export interface PushplusSettings {
+  enabled: boolean
+  channel: string
+  channel_option: string
+  has_token: boolean
+  token_preview: string | null
+  token: string
+}
+
+export interface AdminSystemSettings {
+  default_provider: "local" | "deepseek"
+  deepseek: ProviderSettings
+  local: ProviderSettings
+  pushplus: PushplusSettings
+}
+
+export interface ProviderConnectivityResponse {
+  ok: boolean
+  provider: string
+  model: string
+  message: string
+  latency_ms: number | null
+}
+
+export interface InstanceChatResponse {
+  ok: boolean
+  provider: string
+  model: string
+  reply: string
+  context_preview: string
+}
+
+export interface ApiAck {
+  ok: boolean
+  message: string
+  server_time: number
+  next_suggested_interval_sec: number | null
+}
+
 export interface AlertsFilters {
   accountKeyword: string
   sendStatus: "" | AlertSendStatus
