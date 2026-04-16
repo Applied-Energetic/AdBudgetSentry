@@ -1,4 +1,4 @@
-import { ArrowLeft, RefreshCcw, Send, Trash2 } from "lucide-react"
+import { ArrowLeft, RefreshCcw, Save, Trash2 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 
@@ -8,6 +8,7 @@ import { TrendChartCard, type TrendChartPoint } from "@/components/trend-chart-c
 import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { adminApi } from "@/lib/api"
 import {
@@ -17,10 +18,17 @@ import {
   formatCurrency,
   formatDateTime,
   formatDisplayName,
+  formatMetricKey,
   formatShortTime,
+  formatStrategyTemplate,
   getCaptureStatusLabel,
 } from "@/lib/format"
-import type { AdminAlertRecord, AdminCaptureHistoryPoint, AdminInstanceDetail, InstanceChatResponse } from "@/lib/types"
+import type {
+  AdminCaptureHistoryPoint,
+  AdminInstanceDetail,
+  MetricRegistryItem,
+  StrategyDefinition,
+} from "@/lib/types"
 
 const HISTORY_WINDOW_MS = 12 * 60 * 60 * 1000
 
@@ -29,23 +37,28 @@ export function InstanceDetailPage() {
   const { instanceId = "" } = useParams()
   const [detail, setDetail] = useState<AdminInstanceDetail | null | undefined>(undefined)
   const [history, setHistory] = useState<AdminCaptureHistoryPoint[]>([])
+  const [strategies, setStrategies] = useState<StrategyDefinition[]>([])
+  const [metrics, setMetrics] = useState<MetricRegistryItem[]>([])
   const [form, setForm] = useState({ alias: "", remarks: "" })
+  const [bindingForm, setBindingForm] = useState({ strategyId: "", enabled: "true", priority: "100" })
   const [saving, setSaving] = useState(false)
+  const [bindingSaving, setBindingSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [chatMessage, setChatMessage] = useState("")
-  const [chatLoading, setChatLoading] = useState(false)
-  const [chatResult, setChatResult] = useState<InstanceChatResponse | null>(null)
 
   const load = async () => {
     try {
       setError(null)
-      const [detailResult, historyResult] = await Promise.all([
+      const [detailResult, historyResult, strategyData, metricData] = await Promise.all([
         adminApi.getInstanceDetail(instanceId),
         adminApi.getInstanceHistory(instanceId, 500).catch(() => []),
+        adminApi.getStrategies(),
+        adminApi.getMetrics(),
       ])
       setDetail(detailResult)
       setHistory(historyResult)
+      setStrategies(strategyData)
+      setMetrics(metricData)
       if (detailResult) {
         setForm({
           alias: detailResult.alias || "",
@@ -58,29 +71,7 @@ export function InstanceDetailPage() {
   }
 
   useEffect(() => {
-    let active = true
-
-    void Promise.all([adminApi.getInstanceDetail(instanceId), adminApi.getInstanceHistory(instanceId, 500).catch(() => [])])
-      .then(([detailResult, historyResult]) => {
-        if (!active) return
-        setError(null)
-        setDetail(detailResult)
-        setHistory(historyResult)
-        if (detailResult) {
-          setForm({
-            alias: detailResult.alias || "",
-            remarks: detailResult.remarks || "",
-          })
-        }
-      })
-      .catch((loadError) => {
-        if (!active) return
-        setError(loadError instanceof Error ? loadError.message : "加载实例详情失败")
-      })
-
-    return () => {
-      active = false
-    }
+    void load()
   }, [instanceId])
 
   const historyPoints = useMemo(() => {
@@ -100,36 +91,18 @@ export function InstanceDetailPage() {
     [historyPoints],
   )
 
-  const increaseAmountChartData = useMemo<TrendChartPoint[]>(
-    () =>
-      historyPoints.map((item) => ({
-        timestamp: item.captured_at,
-        label: formatShortTime(item.captured_at),
-        value: item.increase_amount,
-        referenceValue: item.baseline_increase_amount ?? null,
-      })),
-    [historyPoints],
+  const strategyReadyMetrics = useMemo(
+    () => metrics.filter((item) => item.is_enabled && item.is_strategy_ready),
+    [metrics],
   )
 
-  const windowMinutes = useMemo(() => {
-    const latestWithWindow = [...history]
-      .sort((left, right) => right.captured_at - left.captured_at)
-      .find((item) => item.compare_interval_min)
-    return latestWithWindow?.compare_interval_min ?? 10
-  }, [history])
-
-  const recentMailAlerts = useMemo(() => {
-    return [...(detail?.recent_alerts ?? [])]
-      .filter((alert) => (alert.channel || "").toLowerCase() === "mail")
-      .sort((left, right) => {
-        if (left.send_status === right.send_status) {
-          return right.triggered_at - left.triggered_at
-        }
-        if (left.send_status === "sent") return -1
-        if (right.send_status === "sent") return 1
-        return right.triggered_at - left.triggered_at
-      })
-  }, [detail?.recent_alerts])
+  const availableStrategies = useMemo(
+    () =>
+      strategies.filter(
+        (strategy) => !detail?.strategy_bindings.some((binding) => binding.strategy_id === strategy.id) && strategy.enabled,
+      ),
+    [detail?.strategy_bindings, strategies],
+  )
 
   const saveMeta = async () => {
     try {
@@ -144,10 +117,38 @@ export function InstanceDetailPage() {
     }
   }
 
-  const deleteInstance = async () => {
-    if (!window.confirm("删除后将移除当前实例的管理记录，是否继续？")) {
-      return
+  const saveBinding = async () => {
+    if (!bindingForm.strategyId) return
+
+    try {
+      setBindingSaving(true)
+      setError(null)
+      await adminApi.saveInstanceStrategyBinding(instanceId, {
+        strategy_id: Number(bindingForm.strategyId),
+        enabled: bindingForm.enabled === "true",
+        priority: Number(bindingForm.priority) || 100,
+      })
+      setBindingForm({ strategyId: "", enabled: "true", priority: "100" })
+      await load()
+    } catch (bindingError) {
+      setError(bindingError instanceof Error ? bindingError.message : "保存策略绑定失败")
+    } finally {
+      setBindingSaving(false)
     }
+  }
+
+  const removeBinding = async (strategyId: number) => {
+    try {
+      setError(null)
+      await adminApi.deleteInstanceStrategyBinding(instanceId, strategyId)
+      await load()
+    } catch (bindingError) {
+      setError(bindingError instanceof Error ? bindingError.message : "删除策略绑定失败")
+    }
+  }
+
+  const deleteInstance = async () => {
+    if (!window.confirm("删除后将移除当前实例的采集、策略命中和告警记录，是否继续？")) return
 
     try {
       setDeleting(true)
@@ -157,22 +158,6 @@ export function InstanceDetailPage() {
       setError(deleteError instanceof Error ? deleteError.message : "删除实例失败")
     } finally {
       setDeleting(false)
-    }
-  }
-
-  const sendChat = async () => {
-    const message = chatMessage.trim()
-    if (!message) return
-
-    try {
-      setChatLoading(true)
-      setError(null)
-      const result = await adminApi.chatWithInstance(instanceId, message)
-      setChatResult(result)
-    } catch (chatError) {
-      setError(chatError instanceof Error ? chatError.message : "实例聊天失败")
-    } finally {
-      setChatLoading(false)
     }
   }
 
@@ -240,17 +225,18 @@ export function InstanceDetailPage() {
 
       {error ? <div className="text-sm text-rose-600 dark:text-rose-300">{error}</div> : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <MetricValueCard title="最新总消耗" value={formatCurrency(detail.latest_current_spend)} />
-        <MetricValueCard title={`${windowMinutes} 分钟窗口增量`} value={formatCurrency(detail.latest_increase_amount)} />
-        <MetricValueCard title="最近采样时间" value={formatDateTime(detail.last_capture_at)} />
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricValueCard title="最新总花费" value={formatCurrency(detail.latest_current_spend)} />
+        <MetricValueCard title="最近采集时间" value={formatDateTime(detail.last_capture_at)} />
+        <MetricValueCard title="最近心跳" value={formatDateTime(detail.last_heartbeat_at)} />
+        <MetricValueCard title="采集状态" value={getCaptureStatusLabel(detail.last_capture_status)} />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
         <Card className="soft-panel">
           <CardHeader>
             <CardTitle>实例信息</CardTitle>
-            <CardDescription>维护实例别名和备注，方便在告警页和详情页快速识别。</CardDescription>
+            <CardDescription>维护实例别名和备注，便于在策略页和告警页快速识别。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
@@ -261,7 +247,6 @@ export function InstanceDetailPage() {
                 id="instance-alias"
                 value={form.alias}
                 onChange={(event) => setForm((current) => ({ ...current, alias: event.target.value }))}
-                placeholder="例如：旗舰店投放页"
               />
             </div>
             <div className="space-y-2">
@@ -272,10 +257,10 @@ export function InstanceDetailPage() {
                 id="instance-remarks"
                 value={form.remarks}
                 onChange={(event) => setForm((current) => ({ ...current, remarks: event.target.value }))}
-                placeholder="补充当前实例的业务用途、负责人或排查背景。"
               />
             </div>
             <Button onClick={() => void saveMeta()} disabled={saving}>
+              <Save className="size-4" />
               {saving ? "保存中..." : "保存实例信息"}
             </Button>
           </CardContent>
@@ -285,95 +270,187 @@ export function InstanceDetailPage() {
           <InfoItem label="实例 ID" value={detail.instance_id} />
           <InfoItem label="页面类型" value={detail.page_type || "-"} />
           <InfoItem label="脚本版本" value={detail.script_version || "-"} />
-          <InfoItem label="采样状态" value={getCaptureStatusLabel(detail.last_capture_status)} />
-          <InfoItem label="最近心跳" value={formatDateTime(detail.last_heartbeat_at)} />
           <InfoItem label="最近错误" value={compactText(detail.last_error, 80)} />
           <InfoItem label="最近分析" value={compactText(detail.last_analysis_summary, 80)} />
           <InfoItem label="最近行数" value={String(detail.last_row_count ?? "-")} />
+          <InfoItem label="最近分析类型" value={detail.last_anomaly_type || "-"} />
+          <InfoItem label="最近分析级别" value={detail.last_anomaly_severity || "-"} />
         </section>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-2">
-        <TrendChartCard
-          title="总消耗趋势"
-          description="聚焦最近 12 小时的采样变化，用于判断消耗是否持续上涨。"
-          data={currentSpendChartData}
-          color="var(--color-chart-1)"
-          emptyText="最近 12 小时内没有足够的采样点，暂时无法绘制总消耗趋势。"
-          valueLabel="元"
-        />
-        <TrendChartCard
-          title={`${windowMinutes} 分钟增量趋势`}
-          description="结合基线增量一起观察，判断当前波动是正常起伏还是异常加速。"
-          data={increaseAmountChartData}
-          color="var(--color-chart-2)"
-          referenceLabel="基线增量"
-          referenceColor="var(--color-chart-4)"
-          emptyText={`最近 12 小时内没有足够的采样点，暂时无法绘制 ${windowMinutes} 分钟增量趋势。`}
-          valueLabel="元"
-        />
+      <TrendChartCard
+        title="总花费趋势"
+        description="聚焦最近 12 小时的总花费采样，用于观察实例整体波动。"
+        data={currentSpendChartData}
+        color="var(--color-chart-1)"
+        emptyText="最近 12 小时内采样点不足，暂时无法绘制总花费趋势。"
+        valueLabel="元"
+      />
+
+      <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <Card className="soft-panel">
+          <CardHeader>
+            <CardTitle>策略绑定</CardTitle>
+            <CardDescription>按实例绑定或解绑策略。阶段一只有 `花费` 指标可执行。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">选择策略</label>
+                <Select
+                  value={bindingForm.strategyId || "none"}
+                  onValueChange={(value) =>
+                    setBindingForm((current) => ({ ...current, strategyId: value === "none" ? "" : String(value ?? "") }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="请选择策略" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">请选择策略</SelectItem>
+                    {availableStrategies.map((strategy) => (
+                      <SelectItem key={strategy.id} value={String(strategy.id)}>
+                        {strategy.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">启用状态</label>
+                <Select
+                  value={bindingForm.enabled}
+                  onValueChange={(value) => setBindingForm((current) => ({ ...current, enabled: String(value ?? "true") }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="true">启用</SelectItem>
+                    <SelectItem value="false">停用</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">优先级</label>
+                <Input
+                  type="number"
+                  value={bindingForm.priority}
+                  onChange={(event) => setBindingForm((current) => ({ ...current, priority: event.target.value }))}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">可执行指标</label>
+                <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3 text-sm text-muted-foreground">
+                  {strategyReadyMetrics.map((item) => item.display_name).join(" / ") || "暂无"}
+                </div>
+              </div>
+            </div>
+
+            <Button onClick={() => void saveBinding()} disabled={bindingSaving || !bindingForm.strategyId}>
+              {bindingSaving ? "保存中..." : "添加绑定"}
+            </Button>
+
+            <div className="space-y-3">
+              {detail.strategy_bindings.map((binding) => (
+                <div key={binding.id} className="record-card">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-foreground">{binding.strategy_name}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {formatStrategyTemplate(binding.template_type)} / {formatMetricKey(binding.target_metric)}
+                      </div>
+                    </div>
+                    <Button variant="destructive" size="sm" onClick={() => void removeBinding(binding.strategy_id)}>
+                      删除绑定
+                    </Button>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                    <div>启用：{binding.enabled ? "是" : "否"}</div>
+                    <div>优先级：{binding.priority}</div>
+                    <div>窗口：{String(binding.params.window_minutes ?? "-")} 分钟</div>
+                    <div>指标：{formatMetricKey(binding.target_metric)}</div>
+                  </div>
+                </div>
+              ))}
+              {detail.strategy_bindings.length === 0 ? <div className="text-sm text-muted-foreground">当前实例尚未绑定策略。</div> : null}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="soft-panel">
+          <CardHeader>
+            <CardTitle>最近策略命中</CardTitle>
+            <CardDescription>查看最近由哪些策略触发，以及它们使用了什么证据。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {detail.recent_strategy_hits.map((hit) => (
+              <div key={hit.id} className="record-card">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="font-medium">{hit.strategy_name}</div>
+                  <AlertSeverityBadge severity={hit.severity} />
+                </div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  {formatStrategyTemplate(hit.template_type)} / {formatMetricKey(hit.target_metric)} / {formatDateTime(hit.triggered_at)}
+                </div>
+                <div className="mt-2 text-sm text-foreground">得分：{hit.score.toFixed(2)}</div>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                  {hit.evidence.map((evidence) => (
+                    <li key={evidence}>{evidence}</li>
+                  ))}
+                </ul>
+                {hit.recommendation ? <div className="mt-2 text-sm text-foreground">建议：{hit.recommendation}</div> : null}
+              </div>
+            ))}
+            {detail.recent_strategy_hits.length === 0 ? <div className="text-sm text-muted-foreground">最近没有策略命中记录。</div> : null}
+          </CardContent>
+        </Card>
       </section>
 
-      <Card className="soft-panel">
-        <CardHeader>
-          <CardTitle>DeepSeek 实例分析</CardTitle>
-          <CardDescription>可直接针对当前实例提问，让模型结合最近采样、分析与告警上下文给出判断。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Textarea
-            value={chatMessage}
-            onChange={(event) => setChatMessage(event.target.value)}
-            placeholder="例如：请结合最近 30 分钟的采样和告警，判断当前风险是否需要人工介入。"
-          />
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Button onClick={() => void sendChat()} disabled={chatLoading || !chatMessage.trim()}>
-              <Send className="size-4" />
-              {chatLoading ? "分析中..." : "发送给 DeepSeek"}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setChatMessage("请基于最近采样、分析和告警，给出当前实例的风险判断、可能原因和下一步建议。")}
-            >
-              使用建议问题
-            </Button>
-          </div>
-
-          {chatResult ? (
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(300px,0.7fr)]">
-              <div className="record-card">
-                <div className="text-sm font-medium text-foreground">
-                  模型回复
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    {chatResult.provider} / {chatResult.model}
-                  </span>
+      <section className="grid gap-6 xl:grid-cols-2">
+        <Card className="soft-panel">
+          <CardHeader>
+            <CardTitle>最近告警</CardTitle>
+            <CardDescription>告警现在会带上触发策略链路，方便反查来源。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {detail.recent_alerts.map((alert) => (
+              <div key={alert.id} className="record-card">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="font-medium">{alert.title}</div>
+                  <AlertStatusBadge status={alert.send_status} />
+                  <AlertSeverityBadge severity={alert.severity} />
                 </div>
-                <div className="mt-3 whitespace-pre-wrap text-sm leading-7 text-foreground">{chatResult.reply}</div>
+                <div className="mt-2 text-sm text-muted-foreground">
+                  {alert.strategy_name || formatAlertKind(alert.alert_kind)} / {formatDateTime(alert.triggered_at)}
+                </div>
+                <div className="mt-2 text-sm leading-6 text-foreground">{compactText(alert.content_preview, 160)}</div>
               </div>
-              <div className="record-card">
-                <div className="text-sm font-medium text-foreground">上下文摘要</div>
-                <div className="mt-3 whitespace-pre-wrap text-xs leading-6 text-muted-foreground">{chatResult.context_preview}</div>
-              </div>
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
+            ))}
+            {detail.recent_alerts.length === 0 ? <div className="text-sm text-muted-foreground">暂无告警记录。</div> : null}
+          </CardContent>
+        </Card>
 
-      <Card className="soft-panel">
-        <CardHeader>
-          <CardTitle>最近邮件告警</CardTitle>
-          <CardDescription>仅保留最近生成的邮件告警，优先展示已发送结果，减少分析和错误信息对观察的干扰。</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {recentMailAlerts.map((alert) => (
-            <InstanceAlertCard key={alert.id} alert={alert} />
-          ))}
-          {recentMailAlerts.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-border/80 px-4 py-10 text-center text-sm text-muted-foreground">
-              最近没有邮件告警记录。
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
+        <Card className="soft-panel">
+          <CardHeader>
+            <CardTitle>最近错误</CardTitle>
+            <CardDescription>保留实例错误排查入口，便于区分策略问题和采集问题。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {detail.recent_errors.map((errorItem) => (
+              <div key={errorItem.id} className="record-card">
+                <div className="font-medium">{errorItem.error_type}</div>
+                <div className="mt-1 text-sm text-muted-foreground">{formatDateTime(errorItem.occurred_at)}</div>
+                <div className="mt-2 text-sm leading-6 text-foreground">{errorItem.error_message}</div>
+              </div>
+            ))}
+            {detail.recent_errors.length === 0 ? <div className="text-sm text-muted-foreground">暂无错误记录。</div> : null}
+          </CardContent>
+        </Card>
+      </section>
     </div>
   )
 }
@@ -391,31 +468,9 @@ function MetricValueCard({ title, value }: { title: string; value: string }) {
 
 function InfoItem({ label, value }: { label: string; value: string }) {
   return (
-    <div className="info-item">
-      <div className="text-sm text-muted-foreground">{label}</div>
-      <div className="mt-2 text-sm font-medium leading-6 text-foreground">{value}</div>
-    </div>
-  )
-}
-
-function InstanceAlertCard({ alert }: { alert: AdminAlertRecord }) {
-  return (
-    <div className="record-card">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="font-medium text-foreground">{alert.title}</div>
-            <AlertStatusBadge status={alert.send_status} />
-            <AlertSeverityBadge severity={alert.severity} />
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <span className="rounded-full bg-muted/60 px-3 py-1">{formatAlertKind(alert.alert_kind)}</span>
-            <span className="rounded-full bg-muted/60 px-3 py-1">{alert.channel || "-"}</span>
-            <span className="rounded-full bg-muted/60 px-3 py-1">{formatDateTime(alert.triggered_at)}</span>
-          </div>
-        </div>
-      </div>
-      <div className="mt-3 text-sm leading-6 text-foreground">{compactText(alert.content_preview, 240)}</div>
+    <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-4">
+      <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
+      <div className="mt-2 text-sm text-foreground">{value}</div>
     </div>
   )
 }

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import csv
@@ -18,22 +18,35 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from admin_ui import build_admin_dashboard_html, build_alerts_page_html, build_instance_detail_html
 from anomaly import detect_spend_anomaly
 from database import (
+    create_strategy_definition,
     delete_instance_records,
+    delete_instance_strategy_binding,
+    delete_strategy_definition,
     ensure_database,
     fetch_admin_alerts,
     fetch_admin_instances,
+    fetch_admin_strategies,
+    fetch_active_instance_strategy_bindings,
     fetch_capture_history_for_instance,
+    fetch_capture_event_id,
     fetch_history_for_instance,
     fetch_instance_detail,
     fetch_latest_alert_for_instance_kind,
     fetch_latest_analysis_for_instance,
+    fetch_instance_strategy_bindings,
+    fetch_strategy_hits_for_instance,
     fetch_admin_summary,
+    list_metric_registry,
+    open_connection,
     save_alert_record,
     save_error_report,
     save_heartbeat,
     save_ingest_event,
     save_analysis_summary,
+    save_instance_strategy_binding,
+    save_strategy_hit,
     utc_now_ms,
+    update_strategy_definition,
     update_instance_metadata,
 )
 from models import (
@@ -48,21 +61,29 @@ from models import (
     AnalysisResponse,
     AlertRecordRequest,
     ApiAck,
+    CreateStrategyDefinitionRequest,
     ErrorReportRequest,
     HistoryPoint,
     HeartbeatRequest,
     InstanceMetadataResponse,
     InstanceChatRequest,
     InstanceChatResponse,
+    InstanceStrategyBindingRequest,
+    InstanceStrategyBindingResponse,
     IngestRequest,
+    MetricRegistryItem,
     ProviderConnectivityResponse,
     ProviderSettings,
     PushplusSettings,
+    StrategyDefinitionResponse,
+    StrategyHitResponse,
     TestAlertRequest,
     UpdateAdminSystemSettingsRequest,
+    UpdateStrategyDefinitionRequest,
     UpdateInstanceMetadataRequest,
 )
 from providers import OpenAICompatibleProvider, ProviderResult
+from strategy_engine import execute_strategy
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -74,8 +95,10 @@ EXAMPLE_CONFIG_PATH = APP_DIR / "config.example.json"
 ADMIN_FRONTEND_DIR = APP_DIR / "admin_frontend"
 ADMIN_FRONTEND_DIST_DIR = ADMIN_FRONTEND_DIR / "dist"
 
-DEFAULT_CONTEXT = """业务背景：快手磁力金牛在高客单价、目标成本偏高时，可能引入低质量流量，造成虚假转化、疯狂消耗、成本失控。请区分正常爆量与低质流量嫌疑，输出风险等级、证据和操作建议。"""
-MODEL_TRIGGER_TYPES = {"threshold_breach", "surge", "stalled"}
+DEFAULT_CONTEXT = (
+    "业务背景：快手磁力金牛在高客单价、目标成本偏高时，可能引入低质量流量，"
+    "造成异常消耗和成本失控。请基于给定指标区分正常波动与异常放量风险，输出风险等级、证据和操作建议。"
+)
 MODEL_ANALYSIS_COOLDOWN_MS = int(os.getenv("ADBUDGET_ANALYSIS_COOLDOWN_MS", str(10 * 60 * 1000)))
 DEFAULT_ALERTS_CONFIG = {
     "enabled": True,
@@ -207,7 +230,7 @@ def build_provider_test_prompt() -> str:
 def build_instance_chat_context(detail: dict, history: list[dict]) -> str:
     latest_history = list(reversed(history[-12:]))
     history_lines = [
-        f"- {format_time(item.get('captured_at'))} / 总消耗 {item.get('current_spend') or 0:.2f} / "
+        f"- {format_time(item.get('captured_at'))} / 总花费 {item.get('current_spend') or 0:.2f} / "
         f"窗口增量 {item.get('increase_amount') or 0:.2f} / 阈值 {item.get('notify_threshold') or 0:.2f}"
         for item in latest_history
     ] or ["- 暂无最近采样"]
@@ -226,10 +249,10 @@ def build_instance_chat_context(detail: dict, history: list[dict]) -> str:
         [
             "当前实例上下文：",
             f"实例 ID：{detail.get('instance_id') or '-'}",
-            f"账号：{format_account_identity(detail.get('account_name'), detail.get('account_id'))}",
+            f"账户：{format_account_identity(detail.get('account_name'), detail.get('account_id'))}",
             f"页面类型：{detail.get('page_type') or '-'}",
             f"健康状态：{detail.get('health_status') or '-'}",
-            f"最新总消耗：{detail.get('latest_current_spend') or 0:.2f}",
+            f"最新总花费：{detail.get('latest_current_spend') or 0:.2f}",
             f"最新窗口增量：{detail.get('latest_increase_amount') or 0:.2f}",
             "最近采样：",
             *history_lines,
@@ -312,11 +335,11 @@ Rule evidence:
 You are an ad-spend anomaly monitoring assistant. Base your answer only on the provided metrics and rule evidence. Do not invent data. Do not directly conclude fraud, fake orders,?? or intentional platform traffic manipulation.
 
 Output exactly in this format:
-结论：one concise sentence
-原因判断：
+缁撹锛歰ne concise sentence
+鍘熷洜鍒ゆ柇锛?
 1. ...
 2. ...
-建议：
+寤鸿锛?
 1. ...
 2. ...
 
@@ -330,7 +353,7 @@ Requirements:
 
 
 def fallback_text(detection_summary) -> str:
-    evidence = "?".join(detection_summary.evidence[:2]) or "暂无额外规则证据"
+    evidence = "；".join(detection_summary.evidence[:2]) or "暂无额外规则证据"
     return "\n".join(
         [
             f"结论：规则检测命中 {detection_summary.anomaly_type}，严重度 {detection_summary.severity}。",
@@ -365,23 +388,23 @@ def compact_text(value: str | None, limit: int = 100) -> str:
     if not value:
         return "-"
     raw = " ".join(str(value).split())
-    return raw if len(raw) <= limit else f"{raw[: limit - 1]}…"
+    return raw if len(raw) <= limit else f"{raw[: limit - 3]}..."
 
 
 def is_missing_account_id(value: str | None) -> bool:
-    return value in {None, "", "未识别账号ID"}
+    return value in {None, "", "未识别账户ID"}
 
 
 def format_account_identity(account_name: str | None, account_id: str | None) -> str:
     name = (account_name or "").strip()
     account_id = None if is_missing_account_id(account_id) else (account_id or "").strip()
     if name and account_id:
-        return f"{name} · {account_id}"
+        return f"{name} 路 {account_id}"
     if name:
         return name
     if account_id:
         return account_id
-    return "未绑定账号"
+    return "未绑定账户"
 
 
 def build_chip(label: str, tone: str) -> str:
@@ -401,9 +424,9 @@ def build_chip(label: str, tone: str) -> str:
 
 
 def build_account_lines(account_name: str | None, account_id: str | None) -> list[str]:
-    lines = [f"账号名称：{account_name or '未识别账号'}"]
+    lines = [f"账户名称：{account_name or '未识别账户'}"]
     if not is_missing_account_id(account_id):
-        lines.append(f"账号 ID：{account_id}")
+        lines.append(f"账户 ID：{account_id}")
     return lines
 
 
@@ -434,6 +457,11 @@ async def dispatch_pushplus_alert(
     anomaly_type: str | None,
     triggered_at: int,
     cooldown_ms: int,
+    strategy_id: int | None = None,
+    strategy_hit_id: int | None = None,
+    capture_event_id: int | None = None,
+    strategy_name: str | None = None,
+    target_metric: str | None = None,
     force: bool = False,
 ) -> dict:
     latest_record = fetch_latest_alert_for_instance_kind(db_path, instance_id, alert_kind)
@@ -466,6 +494,11 @@ async def dispatch_pushplus_alert(
         "delivery_provider": "pushplus",
         "severity": severity,
         "anomaly_type": anomaly_type,
+        "strategy_id": strategy_id,
+        "strategy_hit_id": strategy_hit_id,
+        "capture_event_id": capture_event_id,
+        "strategy_name": strategy_name,
+        "target_metric": target_metric,
         "triggered_at": triggered_at,
     }
 
@@ -486,7 +519,7 @@ async def dispatch_pushplus_alert(
             {
                 **record_payload,
                 "send_status": "skipped",
-                "provider_response": "未配置 PushPlus Token",
+                "provider_response": "鏈厤缃?PushPlus Token",
             },
         )
         return {"ok": False, "skipped": True, "reason": "missing_pushplus_token"}
@@ -586,12 +619,12 @@ async def send_test_alert(db_path: Path, request: TestAlertRequest) -> dict:
         *build_account_lines(request.account_name, request.account_id),
         f"脚本实例：{request.instance_id or '-'}",
         f"页面类型：{request.page_type or '-'}",
-        f"当前总消耗：{request.current_spend:.2f} 元",
+        f"当前总花费：{request.current_spend:.2f} 元",
         f"{request.compare_interval_min} 分钟增量：{request.increase_amount:.2f} 元",
         f"分析结果：{request.analysis_text or '未提供'}",
     ]
     if request.baseline_spend is not None:
-        preview_lines.insert(-1, f"基线消耗：{request.baseline_spend:.2f} 元")
+        preview_lines.insert(-1, f"基线花费：{request.baseline_spend:.2f} 元")
     if request.baseline_time:
         preview_lines.insert(-1, f"基线时间：{format_time(request.baseline_time)}")
     return await dispatch_pushplus_alert(
@@ -636,7 +669,7 @@ async def scan_and_alert_instance_health(db_path: Path) -> None:
                 f"页面类型：{item.get('page_type') or '-'}",
                 f"最近心跳：{format_time(last_heartbeat_at)}",
                 f"最近采集：{format_time(item.get('last_capture_at'))}",
-                "问题说明：超过 10 分钟未收到心跳，请检查浏览器页签、网络和脚本运行状态。",
+                "问题说明：超过配置窗口未收到心跳，请检查浏览器标签、网络和脚本运行状态。",
             ]
             await dispatch_pushplus_alert(
                 db_path,
@@ -699,9 +732,22 @@ async def health_monitor_loop() -> None:
         await asyncio.sleep(max(15, interval))
 
 
+def extract_current_spend(metrics: dict | None) -> float | None:
+    metrics = metrics or {}
+    current_spend = metrics.get("current_spend")
+    if current_spend is None and isinstance(metrics.get("spend"), dict):
+        current_spend = metrics["spend"].get("current")
+    if current_spend is None:
+        return None
+    try:
+        return float(current_spend)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_analysis_request_from_ingest(payload: dict, history: list[dict]) -> AnalysisRequest | None:
     metrics = payload.get("metrics") or {}
-    current_spend = metrics.get("current_spend")
+    current_spend = extract_current_spend(metrics)
     if current_spend is None:
         return None
 
@@ -733,81 +779,117 @@ def build_analysis_request_from_ingest(payload: dict, history: list[dict]) -> An
     )
 
 
-async def analyze_ingest_payload(db_path: Path, payload: dict) -> None:
+def build_strategy_alert_content(binding: dict, payload: dict, result) -> tuple[str, str, str]:
+    strategy_name = binding.get("strategy_name") or "未命名策略"
+    title = f"【策略告警】【{strategy_name}】{format_account_identity(payload.get('account_name'), payload.get('account_id'))}"
+    lines = [
+        f"策略名称：{strategy_name}",
+        f"模板类型：{binding.get('template_type') or '-'}",
+        f"目标指标：{binding.get('target_metric') or '-'}",
+        f"实例 ID：{payload.get('instance_id') or '-'}",
+        f"页面类型：{payload.get('page_type') or '-'}",
+        f"触发时间：{format_time(int(payload.get('captured_at') or utc_now_ms()))}",
+        f"指标值：{result.metric_value:.2f}",
+    ]
+    if result.baseline_value is not None:
+        lines.append(f"基线值：{result.baseline_value:.2f}")
+    lines.extend(result.evidence[:3])
+    if result.recommendation:
+        lines.append(f"建议：{result.recommendation}")
+    preview = "`n".join(lines)
+    return title, preview, build_alert_mail_html(title, lines)
+
+
+async def evaluate_ingest_strategies(db_path: Path, payload: dict) -> None:
     instance_id = payload["instance_id"]
-    history = fetch_history_for_instance(db_path, instance_id, limit=120)
-    request = build_analysis_request_from_ingest(payload, history)
-    if request is None:
+    captured_at = int(payload.get("captured_at") or utc_now_ms())
+    current_spend = extract_current_spend(payload.get("metrics"))
+    if current_spend is None:
         return
 
-    raw_context = payload.get("raw_context") or {}
-    ai_enabled = raw_context.get("ai_enabled", True)
-    detection_summary = detect_spend_anomaly(
-        history=request.history,
-        increase_amount=request.event.increase_amount,
-        compare_interval_min=request.event.compare_interval_min,
-        threshold=request.event.threshold,
-    )
+    history = fetch_history_for_instance(db_path, instance_id, limit=120)
+    capture_event_id = fetch_capture_event_id(db_path, instance_id, captured_at)
+    bindings = fetch_active_instance_strategy_bindings(db_path, instance_id)
+    triggered_results: list[tuple[dict, object]] = []
 
-    latest_analysis = fetch_latest_analysis_for_instance(db_path, instance_id)
-    is_cooldown_active = bool(
-        latest_analysis
-        and latest_analysis.get("created_at")
-        and utc_now_ms() - int(latest_analysis["created_at"]) < MODEL_ANALYSIS_COOLDOWN_MS
-    )
-    should_call_model = (
-        ai_enabled
-        and detection_summary.anomaly_type in MODEL_TRIGGER_TYPES
-        and not is_cooldown_active
-    )
+    for binding in bindings:
+        result = execute_strategy(
+            binding["template_type"],
+            history,
+            captured_at,
+            binding.get("params") or {},
+        )
+        if not result.triggered:
+            continue
 
-    if should_call_model:
-        config = load_config()
-        provider_name = request.provider_override or config.get("default_provider", "deepseek")
-        try:
-            provider = build_provider(config, provider_name)
-            raw_text = (await run_provider(provider, build_prompt(request, detection_summary))).text
-            summary = extract_analysis_summary(raw_text) or fallback_text(detection_summary)
-            provider_name_out = provider.provider_name
-            model_out = provider.model
-        except Exception as exc:  # noqa: BLE001
-            raw_text = f"{fallback_text(detection_summary)}\n\n模型调用失败：{exc}"
-            summary = fallback_text(detection_summary)
-            provider_name_out = provider_name
-            model_out = "fallback"
-    else:
-        raw_text = fallback_text(detection_summary)
-        if ai_enabled and detection_summary.anomaly_type in MODEL_TRIGGER_TYPES and is_cooldown_active:
-            raw_text = f"{raw_text}\n\n模型分析处于冷却期，本次跳过。"
-        summary = extract_analysis_summary(raw_text) or fallback_text(detection_summary)
-        provider_name_out = "rules"
-        model_out = "fallback"
+        hit_id = save_strategy_hit(
+            db_path,
+            instance_id=instance_id,
+            strategy_id=binding["strategy_id"],
+            binding_id=binding.get("id"),
+            capture_event_id=capture_event_id,
+            target_metric=binding["target_metric"],
+            strategy_name=binding["strategy_name"],
+            template_type=binding["template_type"],
+            severity=result.severity,
+            score=result.score,
+            anomaly_type=result.anomaly_type,
+            evidence=result.evidence,
+            snapshot=result.snapshot,
+            recommendation=result.recommendation,
+            triggered_at=captured_at,
+        )
+        title, content_preview, content_html = build_strategy_alert_content(binding, payload, result)
+        await dispatch_pushplus_alert(
+            db_path,
+            instance_id=instance_id,
+            account_id=payload.get("account_id"),
+            account_name=payload.get("account_name"),
+            page_type=payload.get("page_type"),
+            page_url=payload.get("page_url"),
+            script_version=payload.get("script_version"),
+            alert_kind=f"strategy:{binding['strategy_id']}",
+            title=title,
+            content_preview=content_preview,
+            content_html=content_html,
+            severity=result.severity,
+            anomaly_type=result.anomaly_type,
+            triggered_at=captured_at,
+            cooldown_ms=compute_cooldown_ms((binding.get("params") or {}).get("cooldown_minutes"), 10),
+            strategy_id=binding["strategy_id"],
+            strategy_hit_id=hit_id,
+            capture_event_id=capture_event_id,
+            strategy_name=binding["strategy_name"],
+            target_metric=binding["target_metric"],
+        )
+        triggered_results.append((binding, result))
 
-    save_analysis_summary(
-        db_path,
-        instance_id=instance_id,
-        account_id=payload.get("account_id"),
-        account_name=payload.get("account_name"),
-        page_type=payload.get("page_type"),
-        page_url=payload.get("page_url"),
-        provider=provider_name_out,
-        model=model_out,
-        anomaly_type=detection_summary.anomaly_type,
-        severity=detection_summary.severity,
-        score=detection_summary.score,
-        summary=summary,
-        raw_text=raw_text,
-    )
-    await maybe_send_threshold_alert(db_path, payload, detection_summary, raw_text)
-
-
+    if triggered_results:
+        binding, result = triggered_results[0]
+        summary = f"{binding['strategy_name']} 命中，指标值 {result.metric_value:.2f}"
+        raw_text = "`n".join(result.evidence + ([result.recommendation] if result.recommendation else []))
+        save_analysis_summary(
+            db_path,
+            instance_id=instance_id,
+            account_id=payload.get("account_id"),
+            account_name=payload.get("account_name"),
+            page_type=payload.get("page_type"),
+            page_url=payload.get("page_url"),
+            provider="rules",
+            model="strategy-center",
+            anomaly_type=result.anomaly_type,
+            severity=result.severity,
+            score=result.score,
+            summary=summary,
+            raw_text=raw_text,
+        )
 def build_admin_html(summary: dict, instances: list[dict], db_path: Path) -> str:
     cards = [
-        ("实例总数", str(summary["total_instances"]), "#0f172a"),
+        ("瀹炰緥鎬绘暟", str(summary["total_instances"]), "#0f172a"),
         ("Green", str(summary["green_instances"]), "#166534"),
         ("Yellow", str(summary["yellow_instances"]), "#a16207"),
         ("Red", str(summary["red_instances"]), "#b91c1c"),
-        ("分析记录", str(summary["total_analyses"]), "#1d4ed8"),
+        ("鍒嗘瀽璁板綍", str(summary["total_analyses"]), "#1d4ed8"),
     ]
     rows = []
     for item in instances:
@@ -843,14 +925,14 @@ def build_admin_html(summary: dict, instances: list[dict], db_path: Path) -> str
         for label, value, color in cards
     )
 
-    rows_html = "".join(rows) or '<tr><td colspan="13">暂无实例数据</td></tr>'
+    rows_html = "".join(rows) or '<tr><td colspan="13">鏆傛棤瀹炰緥鏁版嵁</td></tr>'
     return f"""
     <!DOCTYPE html>
     <html lang="zh-CN">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>AdBudgetSentry 控制台</title>
+        <title>AdBudgetSentry 鎺у埗鍙?/title>
         <style>
             :root {{
                 --bg: #f8fafc;
@@ -978,12 +1060,12 @@ def build_admin_html(summary: dict, instances: list[dict], db_path: Path) -> str
     <body>
         <div class="wrap">
             <section class="hero">
-                <h1>AdBudgetSentry 控制台</h1>
-                <p>查看油猴脚本在线状态、最近采集时间和后端接入是否健康。</p>
+                <h1>AdBudgetSentry 鎺у埗鍙?/h1>
+                <p>鏌ョ湅娌圭尨鑴氭湰鍦ㄧ嚎鐘舵€併€佹渶杩戦噰闆嗘椂闂村拰鍚庣鎺ュ叆鏄惁鍋ュ悍銆?/p>
                 <div class="meta">
-                    数据库：{html.escape(str(db_path))} |
-                    最近心跳：{format_time(summary["latest_heartbeat_at"])} |
-                    最近采集：{format_time(summary["latest_capture_at"])}
+                    鏁版嵁搴擄細{html.escape(str(db_path))} |
+                    鏈€杩戝績璺筹細{format_time(summary["latest_heartbeat_at"])} |
+                    鏈€杩戦噰闆嗭細{format_time(summary["latest_capture_at"])}
                 </div>
             </section>
 
@@ -994,19 +1076,19 @@ def build_admin_html(summary: dict, instances: list[dict], db_path: Path) -> str
             <section class="subgrid">
                 <div class="panel">
                     <div class="panel-head">
-                        <h2>状态说明</h2>
-                        <span>按实例聚合</span>
+                        <h2>鐘舵€佽鏄?/h2>
+                        <span>鎸夊疄渚嬭仛鍚?/span>
                     </div>
                     <div class="statline">
-                        <strong>Green</strong>：5 分钟内有心跳，10 分钟内有成功采集，且无连续错误。<br />
-                        <strong>Yellow</strong>：心跳还在，但采集变慢或最近存在间歇性错误。<br />
-                        <strong>Red</strong>：超过 10 分钟无心跳，或连续错误达到阈值。
+                        <strong>Green</strong>锛? 鍒嗛挓鍐呮湁蹇冭烦锛?0 鍒嗛挓鍐呮湁鎴愬姛閲囬泦锛屼笖鏃犺繛缁敊璇€?br />
+                        <strong>Yellow</strong>锛氬績璺宠繕鍦紝浣嗛噰闆嗗彉鎱㈡垨鏈€杩戝瓨鍦ㄩ棿姝囨€ч敊璇€?br />
+                        <strong>Red</strong>锛氳秴杩?10 鍒嗛挓鏃犲績璺筹紝鎴栬繛缁敊璇揪鍒伴槇鍊笺€?
                     </div>
                 </div>
                 <div class="panel">
                     <div class="panel-head">
-                        <h2>调试接口</h2>
-                        <span>本地联调用</span>
+                        <h2>璋冭瘯鎺ュ彛</h2>
+                        <span>鏈湴鑱旇皟鐢?/span>
                     </div>
                     <div class="statline">
                         <strong>GET /healthz</strong><br />
@@ -1021,25 +1103,25 @@ def build_admin_html(summary: dict, instances: list[dict], db_path: Path) -> str
 
             <section class="panel" style="margin-top: 18px;">
                 <div class="panel-head">
-                    <h2>实例健康列表</h2>
-                    <span>按最近心跳倒序</span>
+                    <h2>瀹炰緥鍋ュ悍鍒楄〃</h2>
+                    <span>鎸夋渶杩戝績璺冲€掑簭</span>
                 </div>
                 <table>
                     <thead>
                         <tr>
                             <th>Instance</th>
-                            <th>账号</th>
-                            <th>页面</th>
-                            <th>状态</th>
-                            <th>脚本版本</th>
-                            <th>最近心跳</th>
-                            <th>最近采集</th>
-                            <th>采集状态</th>
-                            <th>连续错误</th>
-                            <th>最近错误</th>
-                            <th>异常类型</th>
-                            <th>严重度</th>
-                            <th>最近分析</th>
+                            <th>璐﹀彿</th>
+                            <th>椤甸潰</th>
+                            <th>鐘舵€?/th>
+                            <th>鑴氭湰鐗堟湰</th>
+                            <th>鏈€杩戝績璺?/th>
+                            <th>鏈€杩戦噰闆?/th>
+                            <th>閲囬泦鐘舵€?/th>
+                            <th>杩炵画閿欒</th>
+                            <th>鏈€杩戦敊璇?/th>
+                            <th>寮傚父绫诲瀷</th>
+                            <th>涓ラ噸搴?/th>
+                            <th>鏈€杩戝垎鏋?/th>
                         </tr>
                     </thead>
                     <tbody>{rows_html}</tbody>
@@ -1124,7 +1206,7 @@ async def ingest(request: IngestRequest) -> ApiAck:
     payload = request.model_dump()
     instance_id = save_ingest_event(db_path, payload)
     payload["instance_id"] = instance_id
-    await analyze_ingest_payload(db_path, payload)
+    await evaluate_ingest_strategies(db_path, payload)
     return ApiAck(server_time=utc_now_ms(), next_suggested_interval_sec=120)
 
 
@@ -1173,28 +1255,23 @@ def admin_update_settings_api(request: UpdateAdminSystemSettingsRequest) -> Admi
 
 @app.post("/admin/api/settings/pushplus/test", response_model=ApiAck)
 async def admin_test_pushplus() -> ApiAck:
-    settings = build_admin_settings()
     result = await dispatch_pushplus_alert(
         get_db_path(),
-        {
-            "instance_id": "admin-settings",
-            "account_name": "系统设置页",
-            "account_id": "settings",
-            "alert_kind": "test",
-            "severity": "low",
-            "anomaly_type": "manual_test",
-            "triggered_at": utc_now_ms(),
-        },
-        title="PushPlus 测试消息",
-        content_preview=(
-            "账号名称：系统设置页\n"
-            "当前总消耗：0.00 元\n\n"
-            "报警时间：测试消息\n"
-            "对比窗口：0 分钟\n\n"
-            "窗口增量：0.00 元\n\n"
-            "阈值：0.00 元"
-        ),
+        instance_id="admin-settings",
+        account_id="settings",
+        account_name="系统设置页",
+        page_type="admin",
+        page_url="/admin/settings",
+        script_version="admin",
+        alert_kind="test",
+        title="PushPlus 娴嬭瘯娑堟伅",
+        content_preview="系统设置页 PushPlus 测试消息",
+        content_html=build_alert_mail_html("PushPlus 测试消息", ["系统设置页 PushPlus 测试消息"]),
+        severity="low",
+        anomaly_type="manual_test",
+        triggered_at=utc_now_ms(),
         cooldown_ms=0,
+        force=True,
     )
     if result.get("ok"):
         return ApiAck(message="pushplus test sent", server_time=utc_now_ms())
@@ -1218,6 +1295,58 @@ async def admin_test_deepseek() -> ProviderConnectivityResponse:
     )
 
 
+@app.get("/admin/api/metrics", response_model=list[MetricRegistryItem])
+def admin_metrics_api() -> list[MetricRegistryItem]:
+    return [MetricRegistryItem(**item) for item in list_metric_registry(get_db_path())]
+
+
+@app.get("/admin/api/strategies", response_model=list[StrategyDefinitionResponse])
+def admin_strategies_api() -> list[StrategyDefinitionResponse]:
+    return [StrategyDefinitionResponse(**item) for item in fetch_admin_strategies(get_db_path())]
+
+
+@app.post("/admin/api/strategies", response_model=StrategyDefinitionResponse)
+def admin_create_strategy(request: CreateStrategyDefinitionRequest) -> StrategyDefinitionResponse:
+    created = create_strategy_definition(
+        get_db_path(),
+        name=request.name,
+        description=request.description,
+        template_type=request.template_type,
+        target_metric=request.target_metric,
+        params=request.params,
+        enabled=request.enabled,
+        is_default=request.is_default,
+        auto_bind_new_instances=request.auto_bind_new_instances,
+    )
+    return StrategyDefinitionResponse(**created)
+
+
+@app.put("/admin/api/strategies/{strategy_id}", response_model=StrategyDefinitionResponse)
+def admin_update_strategy(strategy_id: int, request: UpdateStrategyDefinitionRequest) -> StrategyDefinitionResponse:
+    updated = update_strategy_definition(
+        get_db_path(),
+        strategy_id,
+        name=request.name,
+        description=request.description,
+        template_type=request.template_type,
+        target_metric=request.target_metric,
+        params=request.params,
+        enabled=request.enabled,
+        is_default=request.is_default,
+        auto_bind_new_instances=request.auto_bind_new_instances,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    return StrategyDefinitionResponse(**updated)
+
+
+@app.delete("/admin/api/strategies/{strategy_id}", response_model=ApiAck)
+def admin_delete_strategy(strategy_id: int) -> ApiAck:
+    if not delete_strategy_definition(get_db_path(), strategy_id):
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    return ApiAck(message="deleted", server_time=utc_now_ms())
+
+
 @app.get("/admin/instances", response_model=list[AdminInstanceSummary])
 def admin_instances() -> list[AdminInstanceSummary]:
     return [AdminInstanceSummary(**item) for item in fetch_admin_instances(get_db_path())]
@@ -1229,6 +1358,9 @@ def admin_alerts_api(
     account_keyword: str = "",
     send_status: str = "",
     alert_kind: str = "",
+    strategy_id: int | None = None,
+    template_type: str = "",
+    target_metric: str = "",
     date_from: str = "",
     date_to: str = "",
 ) -> list[AdminAlertRecord]:
@@ -1242,6 +1374,9 @@ def admin_alerts_api(
             account_keyword=account_keyword,
             send_status=send_status,
             alert_kind=normalized_alert_kind,
+            strategy_id=strategy_id,
+            template_type=template_type,
+            target_metric=target_metric,
             date_from_ms=parse_date_start_ms(date_from),
             date_to_ms=parse_date_end_ms(date_to),
         )
@@ -1253,6 +1388,9 @@ def admin_alerts_export_csv(
     account_keyword: str = "",
     send_status: str = "",
     alert_kind: str = "",
+    strategy_id: int | None = None,
+    template_type: str = "",
+    target_metric: str = "",
     date_from: str = "",
     date_to: str = "",
 ) -> Response:
@@ -1262,6 +1400,9 @@ def admin_alerts_export_csv(
         account_keyword=account_keyword,
         send_status=send_status,
         alert_kind=normalize_alert_kind(alert_kind),
+        strategy_id=strategy_id,
+        template_type=template_type,
+        target_metric=target_metric,
         date_from_ms=parse_date_start_ms(date_from),
         date_to_ms=parse_date_end_ms(date_to),
     )
@@ -1277,6 +1418,9 @@ def admin_alerts_export_csv(
             "send_status",
             "severity",
             "anomaly_type",
+            "strategy_name",
+            "template_type",
+            "target_metric",
             "channel",
             "delivery_provider",
             "triggered_at",
@@ -1296,6 +1440,9 @@ def admin_alerts_export_csv(
                 item.get("send_status"),
                 item.get("severity"),
                 item.get("anomaly_type"),
+                item.get("strategy_name"),
+                item.get("template_type"),
+                item.get("target_metric"),
                 item.get("channel"),
                 item.get("delivery_provider"),
                 format_time(item.get("triggered_at")),
@@ -1335,6 +1482,39 @@ def admin_update_instance_metadata(
     return InstanceMetadataResponse(**result)
 
 
+@app.get("/admin/api/instances/{instance_id}/strategy-bindings", response_model=list[InstanceStrategyBindingResponse])
+def admin_instance_strategy_bindings(instance_id: str) -> list[InstanceStrategyBindingResponse]:
+    detail = fetch_instance_detail(get_db_path(), instance_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    return [InstanceStrategyBindingResponse(**item) for item in fetch_instance_strategy_bindings(get_db_path(), instance_id)]
+
+
+@app.post("/admin/api/instances/{instance_id}/strategy-bindings", response_model=InstanceStrategyBindingResponse)
+def admin_upsert_instance_strategy_binding(
+    instance_id: str,
+    request: InstanceStrategyBindingRequest,
+) -> InstanceStrategyBindingResponse:
+    detail = fetch_instance_detail(get_db_path(), instance_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    binding = save_instance_strategy_binding(
+        get_db_path(),
+        instance_id,
+        strategy_id=request.strategy_id,
+        enabled=request.enabled,
+        priority=request.priority,
+    )
+    return InstanceStrategyBindingResponse(**binding)
+
+
+@app.delete("/admin/api/instances/{instance_id}/strategy-bindings/{strategy_id}", response_model=ApiAck)
+def admin_delete_instance_strategy_binding(instance_id: str, strategy_id: int) -> ApiAck:
+    if not delete_instance_strategy_binding(get_db_path(), instance_id, strategy_id):
+        raise HTTPException(status_code=404, detail="Binding not found")
+    return ApiAck(message="deleted", server_time=utc_now_ms())
+
+
 @app.delete("/admin/api/instances/{instance_id}", response_model=ApiAck)
 def admin_delete_instance(instance_id: str) -> ApiAck:
     if not delete_instance_records(get_db_path(), instance_id):
@@ -1369,7 +1549,7 @@ async def admin_instance_chat_api(instance_id: str, request: InstanceChatRequest
             context,
             "用户问题：",
             request.message.strip(),
-            "请基于当前实例上下文回答，优先给出判断、原因和可执行建议；不要编造未提供的数据。",
+            "请基于当前实例上下文回答，优先给出判断、原因和可执行建议，不要编造未提供的数据。",
         ]
     )
     result = await run_provider(provider, prompt)
@@ -1466,7 +1646,7 @@ def admin_settings_page() -> HTMLResponse:
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>系统设置 - AdBudgetSentry</title>
+        <title>绯荤粺璁剧疆 - AdBudgetSentry</title>
         <style>
           body {{ font-family: "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }}
           .page {{ max-width: 960px; margin: 0 auto; padding: 32px 20px 48px; }}
@@ -1483,7 +1663,7 @@ def admin_settings_page() -> HTMLResponse:
           <section class="hero">
             <div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;opacity:.82;">Settings</div>
             <h1 style="margin:10px 0 8px;">系统设置</h1>
-            <div style="line-height:1.7;max-width:700px;">当前环境未找到 React 打包产物，因此暂时回退到后端渲染页。PushPlus 的发送、DeepSeek 的调用都由 FastAPI 后端发起，保存配置后后续请求会自动读取新配置。</div>
+            <div style="line-height:1.7;max-width:700px;">当前环境未找到 React 打包产物，因此暂时回退到后端渲染页。PushPlus 发送和模型调用都由 FastAPI 后端直接发起，保存配置后后续请求会自动读取新配置。</div>
             <div style="margin-top:14px;"><a href="/admin" style="color:#fff;">返回总览</a></div>
           </section>
           <section class="card">

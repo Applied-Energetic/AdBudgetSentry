@@ -5,11 +5,14 @@ import type {
   AdminInstanceDetail,
   AdminInstanceSummary,
   InstanceChatResponse,
+  InstanceStrategyBinding,
   AdminSystemSettings,
   AdminSummary,
   AlertsFilters,
   DashboardPayload,
+  MetricRegistryItem,
   ProviderConnectivityResponse,
+  StrategyDefinition,
 } from "@/lib/types"
 
 const API_BASE_URL = (import.meta.env.VITE_ADMIN_API_BASE_URL ?? "").replace(/\/$/, "")
@@ -41,6 +44,9 @@ function buildAlertsQuery(filters: Partial<AlertsFilters> = {}, limit = 500) {
   if (filters.accountKeyword) params.set("account_keyword", filters.accountKeyword)
   if (filters.sendStatus) params.set("send_status", filters.sendStatus)
   if (filters.alertKind) params.set("alert_kind", filters.alertKind)
+  if (filters.strategyId) params.set("strategy_id", filters.strategyId)
+  if (filters.templateType) params.set("template_type", filters.templateType)
+  if (filters.targetMetric) params.set("target_metric", filters.targetMetric)
   if (filters.dateFrom) params.set("date_from", filters.dateFrom)
   if (filters.dateTo) params.set("date_to", filters.dateTo)
 
@@ -65,6 +71,43 @@ export const adminApi = {
   async getAlerts(filters: Partial<AlertsFilters> = {}, limit = 500): Promise<AdminAlertRecord[]> {
     const query = buildAlertsQuery(filters, limit)
     return fetchJson<AdminAlertRecord[]>(`/admin/api/alerts?${query}`)
+  },
+
+  async getMetrics(): Promise<MetricRegistryItem[]> {
+    return fetchJson<MetricRegistryItem[]>("/admin/api/metrics")
+  },
+
+  async getStrategies(): Promise<StrategyDefinition[]> {
+    return fetchJson<StrategyDefinition[]>("/admin/api/strategies")
+  },
+
+  async createStrategy(payload: Omit<StrategyDefinition, "id" | "binding_count" | "hit_count" | "created_at" | "updated_at">) {
+    return fetchJson<StrategyDefinition>("/admin/api/strategies", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async updateStrategy(
+    strategyId: number,
+    payload: Omit<StrategyDefinition, "id" | "binding_count" | "hit_count" | "created_at" | "updated_at">,
+  ) {
+    return fetchJson<StrategyDefinition>(`/admin/api/strategies/${strategyId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async deleteStrategy(strategyId: number) {
+    return fetchJson<ApiAck>(`/admin/api/strategies/${strategyId}`, {
+      method: "DELETE",
+    })
   },
 
   async getInstanceDetail(instanceId: string): Promise<AdminInstanceDetail | null> {
@@ -103,6 +146,28 @@ export const adminApi = {
 
   async deleteInstance(instanceId: string) {
     return fetchJson(`/admin/api/instances/${encodeURIComponent(instanceId)}`, {
+      method: "DELETE",
+    })
+  },
+
+  async getInstanceStrategyBindings(instanceId: string): Promise<InstanceStrategyBinding[]> {
+    return fetchJson<InstanceStrategyBinding[]>(
+      `/admin/api/instances/${encodeURIComponent(instanceId)}/strategy-bindings`,
+    )
+  },
+
+  async saveInstanceStrategyBinding(instanceId: string, payload: { strategy_id: number; enabled: boolean; priority: number }) {
+    return fetchJson<InstanceStrategyBinding>(`/admin/api/instances/${encodeURIComponent(instanceId)}/strategy-bindings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async deleteInstanceStrategyBinding(instanceId: string, strategyId: number) {
+    return fetchJson<ApiAck>(`/admin/api/instances/${encodeURIComponent(instanceId)}/strategy-bindings/${strategyId}`, {
       method: "DELETE",
     })
   },

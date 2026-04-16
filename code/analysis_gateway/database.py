@@ -13,6 +13,143 @@ GREEN_CAPTURE_MS = 10 * 60 * 1000
 YELLOW_HEARTBEAT_MS = 10 * 60 * 1000
 YELLOW_CAPTURE_MS = 15 * 60 * 1000
 RED_CONSECUTIVE_ERRORS = 3
+DEFAULT_METRICS = [
+    {
+        "metric_key": "spend",
+        "display_name": "花费",
+        "description": "账户流水花费，阶段一唯一可执行指标",
+        "unit": "cny",
+        "is_enabled": 1,
+        "is_strategy_ready": 1,
+    },
+    {
+        "metric_key": "impressions",
+        "display_name": "曝光次数",
+        "description": "预留指标",
+        "unit": "count",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "clicks",
+        "display_name": "点击次数",
+        "description": "预留指标",
+        "unit": "count",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "ctr",
+        "display_name": "点击率",
+        "description": "预留指标",
+        "unit": "ratio",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "accelerated_spend",
+        "display_name": "加速探索花费",
+        "description": "预留指标",
+        "unit": "cny",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "creative_boost_spend",
+        "display_name": "素材追投花费",
+        "description": "预留指标",
+        "unit": "cny",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "video_3s",
+        "display_name": "视频3秒播放次数",
+        "description": "预留指标",
+        "unit": "count",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "video_5s",
+        "display_name": "视频5秒播放次数",
+        "description": "预留指标",
+        "unit": "count",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "video_complete",
+        "display_name": "视频完播次数",
+        "description": "预留指标",
+        "unit": "count",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "yellow_cart_clicks",
+        "display_name": "小黄车点击次数",
+        "description": "预留指标",
+        "unit": "count",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "product_card_clicks",
+        "display_name": "商品卡点击次数",
+        "description": "预留指标",
+        "unit": "count",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+    {
+        "metric_key": "merchant_coupon_penetration",
+        "display_name": "超级商家券订单渗透",
+        "description": "预留指标",
+        "unit": "ratio",
+        "is_enabled": 1,
+        "is_strategy_ready": 0,
+    },
+]
+DEFAULT_STRATEGIES = [
+    {
+        "name": "默认花费阈值策略",
+        "description": "阶段一默认策略：监控10分钟窗口花费增量阈值",
+        "template_type": "window_threshold",
+        "target_metric": "spend",
+        "params_json": json.dumps(
+            {
+                "window_minutes": 10,
+                "threshold_value": 20,
+                "cooldown_minutes": 10,
+                "severity": "high",
+            },
+            ensure_ascii=False,
+        ),
+        "enabled": 1,
+        "is_default": 1,
+        "auto_bind_new_instances": 1,
+    },
+    {
+        "name": "默认历史基线策略",
+        "description": "阶段一预置但默认不自动绑定的历史基线策略",
+        "template_type": "historical_baseline",
+        "target_metric": "spend",
+        "params_json": json.dumps(
+            {
+                "window_minutes": 10,
+                "lookback_days": 7,
+                "zscore_threshold": 2.5,
+                "min_samples": 3,
+                "severity": "medium",
+            },
+            ensure_ascii=False,
+        ),
+        "enabled": 1,
+        "is_default": 1,
+        "auto_bind_new_instances": 0,
+    },
+]
 
 
 def utc_now_ms() -> int:
@@ -34,6 +171,97 @@ def derive_instance_id(payload: dict) -> str:
         ]
     )
     return f"inst_{sha1(raw.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _seed_metric_registry(conn: sqlite3.Connection) -> None:
+    now_ms = utc_now_ms()
+    for item in DEFAULT_METRICS:
+        conn.execute(
+            """
+            INSERT INTO metric_registry (
+                metric_key, display_name, description, unit,
+                is_enabled, is_strategy_ready, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(metric_key) DO UPDATE SET
+                display_name = excluded.display_name,
+                description = excluded.description,
+                unit = excluded.unit,
+                is_enabled = excluded.is_enabled,
+                is_strategy_ready = excluded.is_strategy_ready,
+                updated_at = excluded.updated_at
+            """,
+            (
+                item["metric_key"],
+                item["display_name"],
+                item["description"],
+                item["unit"],
+                item["is_enabled"],
+                item["is_strategy_ready"],
+                now_ms,
+                now_ms,
+            ),
+        )
+
+
+def _seed_default_strategies(conn: sqlite3.Connection) -> None:
+    now_ms = utc_now_ms()
+    for item in DEFAULT_STRATEGIES:
+        conn.execute(
+            """
+            INSERT INTO strategy_definitions (
+                name, description, template_type, target_metric, params_json,
+                enabled, is_default, auto_bind_new_instances, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                description = excluded.description,
+                template_type = excluded.template_type,
+                target_metric = excluded.target_metric,
+                params_json = excluded.params_json,
+                enabled = excluded.enabled,
+                is_default = excluded.is_default,
+                auto_bind_new_instances = excluded.auto_bind_new_instances,
+                updated_at = excluded.updated_at
+            """,
+            (
+                item["name"],
+                item["description"],
+                item["template_type"],
+                item["target_metric"],
+                item["params_json"],
+                item["enabled"],
+                item["is_default"],
+                item["auto_bind_new_instances"],
+                now_ms,
+                now_ms,
+            ),
+        )
+
+
+def _bind_default_strategies(conn: sqlite3.Connection, instance_id: str) -> None:
+    now_ms = utc_now_ms()
+    strategy_rows = conn.execute(
+        """
+        SELECT id
+        FROM strategy_definitions
+        WHERE enabled = 1 AND auto_bind_new_instances = 1
+        """
+    ).fetchall()
+    for row in strategy_rows:
+        conn.execute(
+            """
+            INSERT INTO instance_strategy_bindings (
+                instance_id, strategy_id, enabled, priority, created_at, updated_at
+            ) VALUES (?, ?, 1, 100, ?, ?)
+            ON CONFLICT(instance_id, strategy_id) DO NOTHING
+            """,
+            (instance_id, row["id"], now_ms, now_ms),
+        )
 
 
 def ensure_database(db_path: Path) -> None:
@@ -141,6 +369,66 @@ def ensure_database(db_path: Path) -> None:
                 provider_response TEXT,
                 severity TEXT,
                 anomaly_type TEXT,
+                strategy_id INTEGER,
+                strategy_hit_id INTEGER,
+                capture_event_id INTEGER,
+                strategy_name TEXT,
+                target_metric TEXT,
+                triggered_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS metric_registry (
+                metric_key TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                description TEXT,
+                unit TEXT,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                is_strategy_ready INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS strategy_definitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                template_type TEXT NOT NULL,
+                target_metric TEXT NOT NULL,
+                params_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                auto_bind_new_instances INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS instance_strategy_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id TEXT NOT NULL,
+                strategy_id INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 100,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(instance_id, strategy_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS strategy_hits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id TEXT NOT NULL,
+                strategy_id INTEGER NOT NULL,
+                binding_id INTEGER,
+                capture_event_id INTEGER,
+                target_metric TEXT NOT NULL,
+                strategy_name TEXT NOT NULL,
+                template_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                score REAL NOT NULL,
+                anomaly_type TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                recommendation TEXT,
                 triggered_at INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
             );
@@ -165,16 +453,26 @@ def ensure_database(db_path: Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_alert_records_created_time
                 ON alert_records(created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_strategy_bindings_instance
+                ON instance_strategy_bindings(instance_id, enabled, priority);
+
+            CREATE INDEX IF NOT EXISTS idx_strategy_hits_instance_time
+                ON strategy_hits(instance_id, triggered_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_strategy_hits_strategy_time
+                ON strategy_hits(strategy_id, triggered_at DESC);
             """
         )
-        columns = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(script_instances)").fetchall()
-        }
-        if "alias" not in columns:
-            conn.execute("ALTER TABLE script_instances ADD COLUMN alias TEXT")
-        if "remarks" not in columns:
-            conn.execute("ALTER TABLE script_instances ADD COLUMN remarks TEXT")
+        _ensure_column(conn, "script_instances", "alias", "TEXT")
+        _ensure_column(conn, "script_instances", "remarks", "TEXT")
+        _ensure_column(conn, "alert_records", "strategy_id", "INTEGER")
+        _ensure_column(conn, "alert_records", "strategy_hit_id", "INTEGER")
+        _ensure_column(conn, "alert_records", "capture_event_id", "INTEGER")
+        _ensure_column(conn, "alert_records", "strategy_name", "TEXT")
+        _ensure_column(conn, "alert_records", "target_metric", "TEXT")
+        _seed_metric_registry(conn)
+        _seed_default_strategies(conn)
 
 
 def open_connection(db_path: Path) -> sqlite3.Connection:
@@ -267,6 +565,7 @@ def save_ingest_event(db_path: Path, payload: dict) -> str:
             page_url=payload.get("page_url"),
             script_version=payload.get("script_version"),
         )
+        _bind_default_strategies(conn, instance_id)
         conn.execute(
             """
             INSERT INTO capture_events (
@@ -531,8 +830,9 @@ def save_alert_record(db_path: Path, payload: dict) -> int:
             INSERT INTO alert_records (
                 instance_id, account_id, account_name, page_type, page_url, script_version,
                 alert_kind, title, content_preview, channel, channel_option, delivery_provider,
-                send_status, provider_response, severity, anomaly_type, triggered_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                send_status, provider_response, severity, anomaly_type, strategy_id, strategy_hit_id,
+                capture_event_id, strategy_name, target_metric, triggered_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 instance_id,
@@ -551,6 +851,11 @@ def save_alert_record(db_path: Path, payload: dict) -> int:
                 payload.get("provider_response"),
                 payload.get("severity"),
                 payload.get("anomaly_type"),
+                payload.get("strategy_id"),
+                payload.get("strategy_hit_id"),
+                payload.get("capture_event_id"),
+                payload.get("strategy_name"),
+                payload.get("target_metric"),
                 payload["triggered_at"],
                 now_ms,
             ),
@@ -606,6 +911,357 @@ def fetch_history_for_instance(db_path: Path, instance_id: str, limit: int = 60)
             items.append({"timestamp": int(row["captured_at"]), "spend": float(spend)})
         except (TypeError, ValueError):
             continue
+    return items
+
+
+def fetch_capture_event_id(db_path: Path, instance_id: str, captured_at: int) -> int | None:
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM capture_events
+            WHERE instance_id = ? AND captured_at = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (instance_id, captured_at),
+        ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def list_metric_registry(db_path: Path) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT metric_key, display_name, description, unit, is_enabled, is_strategy_ready
+            FROM metric_registry
+            ORDER BY metric_key
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def fetch_strategy_definition(db_path: Path, strategy_id: int) -> dict | None:
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, description, template_type, target_metric, params_json, enabled,
+                   is_default, auto_bind_new_instances, created_at, updated_at
+            FROM strategy_definitions
+            WHERE id = ?
+            """,
+            (strategy_id,),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["params"] = json.loads(item.pop("params_json") or "{}")
+    item["enabled"] = bool(item["enabled"])
+    item["is_default"] = bool(item["is_default"])
+    item["auto_bind_new_instances"] = bool(item["auto_bind_new_instances"])
+    return item
+
+
+def fetch_strategy_by_name(db_path: Path, name: str) -> dict | None:
+    with open_connection(db_path) as conn:
+        row = conn.execute("SELECT id FROM strategy_definitions WHERE name = ?", (name,)).fetchone()
+    return fetch_strategy_definition(db_path, int(row["id"])) if row else None
+
+
+def fetch_admin_strategies(db_path: Path) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                s.id,
+                s.name,
+                s.description,
+                s.template_type,
+                s.target_metric,
+                s.params_json,
+                s.enabled,
+                s.is_default,
+                s.auto_bind_new_instances,
+                s.created_at,
+                s.updated_at,
+                COUNT(DISTINCT b.instance_id) AS binding_count,
+                COUNT(h.id) AS hit_count
+            FROM strategy_definitions s
+            LEFT JOIN instance_strategy_bindings b ON b.strategy_id = s.id
+            LEFT JOIN strategy_hits h ON h.strategy_id = s.id
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC, s.id DESC
+            """
+        ).fetchall()
+
+    items: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        item["params"] = json.loads(item.pop("params_json") or "{}")
+        item["enabled"] = bool(item["enabled"])
+        item["is_default"] = bool(item["is_default"])
+        item["auto_bind_new_instances"] = bool(item["auto_bind_new_instances"])
+        items.append(item)
+    return items
+
+
+def create_strategy_definition(
+    db_path: Path,
+    *,
+    name: str,
+    description: str | None,
+    template_type: str,
+    target_metric: str,
+    params: dict,
+    enabled: bool,
+    is_default: bool,
+    auto_bind_new_instances: bool,
+) -> dict:
+    now_ms = utc_now_ms()
+    with open_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO strategy_definitions (
+                name, description, template_type, target_metric, params_json,
+                enabled, is_default, auto_bind_new_instances, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name.strip(),
+                (description or "").strip() or None,
+                template_type,
+                target_metric,
+                json.dumps(params, ensure_ascii=False),
+                1 if enabled else 0,
+                1 if is_default else 0,
+                1 if auto_bind_new_instances else 0,
+                now_ms,
+                now_ms,
+            ),
+        )
+    return fetch_strategy_definition(db_path, int(cursor.lastrowid))
+
+
+def update_strategy_definition(
+    db_path: Path,
+    strategy_id: int,
+    *,
+    name: str,
+    description: str | None,
+    template_type: str,
+    target_metric: str,
+    params: dict,
+    enabled: bool,
+    is_default: bool,
+    auto_bind_new_instances: bool,
+) -> dict | None:
+    now_ms = utc_now_ms()
+    with open_connection(db_path) as conn:
+        row = conn.execute("SELECT id FROM strategy_definitions WHERE id = ?", (strategy_id,)).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            """
+            UPDATE strategy_definitions
+            SET
+                name = ?,
+                description = ?,
+                template_type = ?,
+                target_metric = ?,
+                params_json = ?,
+                enabled = ?,
+                is_default = ?,
+                auto_bind_new_instances = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                name.strip(),
+                (description or "").strip() or None,
+                template_type,
+                target_metric,
+                json.dumps(params, ensure_ascii=False),
+                1 if enabled else 0,
+                1 if is_default else 0,
+                1 if auto_bind_new_instances else 0,
+                now_ms,
+                strategy_id,
+            ),
+        )
+    return fetch_strategy_definition(db_path, strategy_id)
+
+
+def delete_strategy_definition(db_path: Path, strategy_id: int) -> bool:
+    with open_connection(db_path) as conn:
+        row = conn.execute("SELECT id FROM strategy_definitions WHERE id = ?", (strategy_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("DELETE FROM instance_strategy_bindings WHERE strategy_id = ?", (strategy_id,))
+        conn.execute("DELETE FROM strategy_definitions WHERE id = ?", (strategy_id,))
+    return True
+
+
+def save_instance_strategy_binding(
+    db_path: Path,
+    instance_id: str,
+    *,
+    strategy_id: int,
+    enabled: bool,
+    priority: int,
+) -> dict:
+    now_ms = utc_now_ms()
+    with open_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO instance_strategy_bindings (
+                instance_id, strategy_id, enabled, priority, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(instance_id, strategy_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                priority = excluded.priority,
+                updated_at = excluded.updated_at
+            """,
+            (instance_id, strategy_id, 1 if enabled else 0, priority, now_ms, now_ms),
+        )
+    bindings = fetch_instance_strategy_bindings(db_path, instance_id)
+    return next(item for item in bindings if item["strategy_id"] == strategy_id)
+
+
+def delete_instance_strategy_binding(db_path: Path, instance_id: str, strategy_id: int) -> bool:
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM instance_strategy_bindings WHERE instance_id = ? AND strategy_id = ?",
+            (instance_id, strategy_id),
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "DELETE FROM instance_strategy_bindings WHERE instance_id = ? AND strategy_id = ?",
+            (instance_id, strategy_id),
+        )
+    return True
+
+
+def fetch_instance_strategy_bindings(db_path: Path, instance_id: str) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                b.id,
+                b.instance_id,
+                b.strategy_id,
+                b.enabled,
+                b.priority,
+                b.created_at,
+                b.updated_at,
+                s.name AS strategy_name,
+                s.description,
+                s.template_type,
+                s.target_metric,
+                s.params_json
+            FROM instance_strategy_bindings b
+            JOIN strategy_definitions s ON s.id = b.strategy_id
+            WHERE b.instance_id = ?
+            ORDER BY b.priority ASC, b.id ASC
+            """,
+            (instance_id,),
+        ).fetchall()
+    items: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        item["enabled"] = bool(item["enabled"])
+        item["params"] = json.loads(item.pop("params_json") or "{}")
+        items.append(item)
+    return items
+
+
+def fetch_active_instance_strategy_bindings(db_path: Path, instance_id: str) -> list[dict]:
+    return [item for item in fetch_instance_strategy_bindings(db_path, instance_id) if item["enabled"]]
+
+
+def save_strategy_hit(
+    db_path: Path,
+    *,
+    instance_id: str,
+    strategy_id: int,
+    binding_id: int | None,
+    capture_event_id: int | None,
+    target_metric: str,
+    strategy_name: str,
+    template_type: str,
+    severity: str,
+    score: float,
+    anomaly_type: str,
+    evidence: list[str],
+    snapshot: dict,
+    recommendation: str | None,
+    triggered_at: int,
+) -> int:
+    now_ms = utc_now_ms()
+    with open_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO strategy_hits (
+                instance_id, strategy_id, binding_id, capture_event_id, target_metric,
+                strategy_name, template_type, severity, score, anomaly_type,
+                evidence_json, snapshot_json, recommendation, triggered_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                instance_id,
+                strategy_id,
+                binding_id,
+                capture_event_id,
+                target_metric,
+                strategy_name,
+                template_type,
+                severity,
+                score,
+                anomaly_type,
+                json.dumps(evidence, ensure_ascii=False),
+                json.dumps(snapshot, ensure_ascii=False),
+                recommendation,
+                triggered_at,
+                now_ms,
+            ),
+        )
+    return int(cursor.lastrowid)
+
+
+def fetch_strategy_hits_for_instance(db_path: Path, instance_id: str, limit: int = 20) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                instance_id,
+                strategy_id,
+                binding_id,
+                capture_event_id,
+                target_metric,
+                strategy_name,
+                template_type,
+                severity,
+                score,
+                anomaly_type,
+                evidence_json,
+                snapshot_json,
+                recommendation,
+                triggered_at,
+                created_at
+            FROM strategy_hits
+            WHERE instance_id = ?
+            ORDER BY triggered_at DESC, id DESC
+            LIMIT ?
+            """,
+            (instance_id, limit),
+        ).fetchall()
+    items: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        item["evidence"] = json.loads(item.pop("evidence_json") or "[]")
+        item["snapshot"] = json.loads(item.pop("snapshot_json") or "{}")
+        items.append(item)
     return items
 
 
@@ -849,6 +1505,9 @@ def fetch_admin_alerts(
     account_keyword: str | None = None,
     send_status: str | None = None,
     alert_kind: str | None = None,
+    strategy_id: int | None = None,
+    template_type: str | None = None,
+    target_metric: str | None = None,
     date_from_ms: int | None = None,
     date_to_ms: int | None = None,
 ) -> list[dict]:
@@ -871,11 +1530,20 @@ def fetch_admin_alerts(
     if alert_kind:
         clauses.append("alert_kind = ?")
         params.append(alert_kind)
+    if strategy_id is not None:
+        clauses.append("a.strategy_id = ?")
+        params.append(strategy_id)
+    if template_type:
+        clauses.append("COALESCE(s.template_type, '') = ?")
+        params.append(template_type)
+    if target_metric:
+        clauses.append("COALESCE(a.target_metric, '') = ?")
+        params.append(target_metric)
     if date_from_ms is not None:
-        clauses.append("triggered_at >= ?")
+        clauses.append("a.triggered_at >= ?")
         params.append(date_from_ms)
     if date_to_ms is not None:
-        clauses.append("triggered_at <= ?")
+        clauses.append("a.triggered_at <= ?")
         params.append(date_to_ms)
 
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -884,28 +1552,35 @@ def fetch_admin_alerts(
         rows = conn.execute(
             f"""
             SELECT
-                id,
-                instance_id,
-                account_id,
-                account_name,
-                page_type,
-                page_url,
-                script_version,
-                alert_kind,
-                title,
-                content_preview,
-                channel,
-                channel_option,
-                delivery_provider,
-                send_status,
-                provider_response,
-                severity,
-                anomaly_type,
-                triggered_at,
-                created_at
-            FROM alert_records
+                a.id,
+                a.instance_id,
+                a.account_id,
+                a.account_name,
+                a.page_type,
+                a.page_url,
+                a.script_version,
+                a.alert_kind,
+                a.title,
+                a.content_preview,
+                a.channel,
+                a.channel_option,
+                a.delivery_provider,
+                a.send_status,
+                a.provider_response,
+                a.severity,
+                a.anomaly_type,
+                a.strategy_id,
+                a.strategy_hit_id,
+                a.capture_event_id,
+                a.strategy_name,
+                a.target_metric,
+                a.triggered_at,
+                a.created_at,
+                s.template_type
+            FROM alert_records a
+            LEFT JOIN strategy_definitions s ON s.id = a.strategy_id
             {where_sql}
-            ORDER BY triggered_at DESC, id DESC
+            ORDER BY a.triggered_at DESC, a.id DESC
             LIMIT ?
             """,
             (*params, limit),
@@ -935,6 +1610,11 @@ def fetch_alerts_for_instance(db_path: Path, instance_id: str, limit: int = 20) 
                 provider_response,
                 severity,
                 anomaly_type,
+                strategy_id,
+                strategy_hit_id,
+                capture_event_id,
+                strategy_name,
+                target_metric,
                 triggered_at,
                 created_at
             FROM alert_records
@@ -973,6 +1653,11 @@ def fetch_latest_alert_for_instance_kind(
                 provider_response,
                 severity,
                 anomaly_type,
+                strategy_id,
+                strategy_hit_id,
+                capture_event_id,
+                strategy_name,
+                target_metric,
                 triggered_at,
                 created_at
             FROM alert_records
@@ -995,6 +1680,8 @@ def fetch_instance_detail(db_path: Path, instance_id: str) -> dict | None:
         detail["recent_alerts"] = fetch_alerts_for_instance(db_path, instance_id, limit=10)
         detail["recent_analyses"] = fetch_recent_analyses_for_instance(db_path, instance_id, limit=10)
         detail["capture_history"] = fetch_capture_history_for_instance(db_path, instance_id, limit=120)
+        detail["strategy_bindings"] = fetch_instance_strategy_bindings(db_path, instance_id)
+        detail["recent_strategy_hits"] = fetch_strategy_hits_for_instance(db_path, instance_id, limit=10)
         latest_point = detail["capture_history"][-1] if detail["capture_history"] else None
         detail["latest_current_spend"] = (
             float(latest_point["current_spend"]) if latest_point else None
@@ -1054,6 +1741,8 @@ def delete_instance_records(db_path: Path, instance_id: str) -> bool:
             "capture_events",
             "error_reports",
             "analysis_summaries",
+            "strategy_hits",
+            "instance_strategy_bindings",
             "alert_records",
             "script_instances",
         ):

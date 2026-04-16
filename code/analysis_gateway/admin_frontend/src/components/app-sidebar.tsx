@@ -1,4 +1,4 @@
-import { AlertTriangle, LayoutDashboard, Server, Settings } from "lucide-react"
+import { AlertTriangle, LayoutDashboard, Server, Settings, Workflow } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Link, useLocation } from "react-router-dom"
 
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils"
 const navigationItems = [
   { title: "总览", href: "/admin", icon: LayoutDashboard, exact: true },
   { title: "告警", href: "/admin/alerts", icon: AlertTriangle },
+  { title: "策略", href: "/admin/strategies", icon: Workflow },
   { title: "系统设置", href: "/admin/settings", icon: Settings },
 ]
 
@@ -36,9 +37,7 @@ export function AppSidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
           <Badge className="rounded-full bg-primary px-2.5 py-0.5 text-primary-foreground">V1</Badge>
         </div>
-        <p className="mt-3 text-sm leading-6 text-muted-foreground">
-          统一查看实例状态、异常告警、分析结果和系统配置。
-        </p>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">统一查看实例状态、策略绑定、告警历史和系统配置。</p>
       </div>
 
       <nav className="space-y-1 px-3 pb-4">
