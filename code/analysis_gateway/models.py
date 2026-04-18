@@ -9,6 +9,7 @@ ProviderName = Literal["local", "deepseek"]
 HealthStatus = Literal["green", "yellow", "red"]
 CaptureStatus = Literal["success", "warning", "error"]
 AlertSendStatus = Literal["sent", "failed", "skipped"]
+StrategyTemplateType = Literal["window_threshold", "historical_baseline"]
 
 
 class HistoryPoint(BaseModel):
@@ -110,6 +111,11 @@ class AlertRecordRequest(SignedPayload):
     provider_response: str | None = None
     severity: str | None = None
     anomaly_type: str | None = None
+    strategy_id: int | None = None
+    strategy_hit_id: int | None = None
+    capture_event_id: int | None = None
+    strategy_name: str | None = None
+    target_metric: str | None = None
     triggered_at: int = Field(..., description="Unix epoch milliseconds")
 
 
@@ -251,6 +257,95 @@ class AdminAlertRecord(BaseModel):
     provider_response: str | None = None
     severity: str | None = None
     anomaly_type: str | None = None
+    strategy_id: int | None = None
+    strategy_hit_id: int | None = None
+    capture_event_id: int | None = None
+    strategy_name: str | None = None
+    target_metric: str | None = None
+    template_type: str | None = None
+    triggered_at: int
+    created_at: int
+
+
+class MetricRegistryItem(BaseModel):
+    metric_key: str
+    display_name: str
+    description: str | None = None
+    unit: str | None = None
+    is_enabled: bool
+    is_strategy_ready: bool
+
+
+class StrategyDefinitionBase(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: str | None = None
+    template_type: StrategyTemplateType
+    target_metric: str = Field(..., min_length=1)
+    params: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    is_default: bool = False
+    auto_bind_new_instances: bool = False
+
+
+class CreateStrategyDefinitionRequest(StrategyDefinitionBase):
+    pass
+
+
+class UpdateStrategyDefinitionRequest(StrategyDefinitionBase):
+    pass
+
+
+class StrategyDefinitionResponse(StrategyDefinitionBase):
+    id: int
+    binding_count: int = 0
+    hit_count: int = 0
+    created_at: int | None = None
+    updated_at: int | None = None
+
+
+class InstanceStrategyBindingRequest(BaseModel):
+    strategy_id: int
+    enabled: bool = True
+    priority: int = 100
+
+
+class InstanceStrategyBindingResponse(BaseModel):
+    id: int
+    instance_id: str
+    strategy_id: int
+    enabled: bool
+    priority: int
+    strategy_name: str
+    description: str | None = None
+    template_type: StrategyTemplateType
+    target_metric: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    created_at: int | None = None
+    updated_at: int | None = None
+
+
+class AdminInstanceStrategyRecord(InstanceStrategyBindingResponse):
+    instance_label: str
+    account_name: str | None = None
+    account_id: str | None = None
+    hit_count: int = 0
+
+
+class StrategyHitResponse(BaseModel):
+    id: int
+    instance_id: str
+    strategy_id: int
+    binding_id: int | None = None
+    capture_event_id: int | None = None
+    target_metric: str
+    strategy_name: str
+    template_type: StrategyTemplateType
+    severity: str
+    score: float
+    anomaly_type: str
+    evidence: list[str] = Field(default_factory=list)
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+    recommendation: str | None = None
     triggered_at: int
     created_at: int
 
@@ -294,3 +389,5 @@ class AdminInstanceDetail(AdminInstanceSummary):
     recent_alerts: list[AdminAlertRecord] = Field(default_factory=list)
     recent_analyses: list[AdminAnalysisRecord] = Field(default_factory=list)
     capture_history: list[AdminCaptureHistoryPoint] = Field(default_factory=list)
+    strategy_bindings: list[InstanceStrategyBindingResponse] = Field(default_factory=list)
+    recent_strategy_hits: list[StrategyHitResponse] = Field(default_factory=list)

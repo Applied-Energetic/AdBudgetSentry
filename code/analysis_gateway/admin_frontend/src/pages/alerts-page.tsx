@@ -8,9 +8,15 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { adminApi } from "@/lib/api"
-import { compactText, formatAccountIdentity, formatAlertKind, formatDateTime, formatDisplayName } from "@/lib/format"
-import type { AdminAlertRecord, AlertsFilters } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import {
+  compactText,
+  formatAccountIdentity,
+  formatAlertKind,
+  formatDateTime,
+  formatMetricKey,
+  formatStrategyTemplate,
+} from "@/lib/format"
+import type { AdminAlertRecord, AlertsFilters, StrategyDefinition } from "@/lib/types"
 
 function getTodayRange() {
   const today = new Date()
@@ -22,73 +28,32 @@ const defaultFilters: AlertsFilters = {
   accountKeyword: "",
   sendStatus: "",
   alertKind: "",
+  strategyId: "",
+  templateType: "",
+  targetMetric: "",
   ...getTodayRange(),
 }
 
 export function AlertsPage() {
   const [filters, setFilters] = useState<AlertsFilters>(defaultFilters)
   const [alerts, setAlerts] = useState<AdminAlertRecord[]>([])
+  const [strategies, setStrategies] = useState<StrategyDefinition[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [selectedInstanceId, setSelectedInstanceId] = useState<string>("")
 
   const load = async () => {
     try {
       setError(null)
-      setAlerts(await adminApi.getAlerts(filters))
+      const [alertData, strategyData] = await Promise.all([adminApi.getAlerts(filters), adminApi.getStrategies()])
+      setAlerts(alertData)
+      setStrategies(strategyData)
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "加载告警记录失败")
     }
   }
 
   useEffect(() => {
-    let active = true
-
-    void adminApi
-      .getAlerts(filters)
-      .then((result) => {
-        if (!active) return
-        setError(null)
-        setAlerts(result)
-      })
-      .catch((loadError) => {
-        if (!active) return
-        setError(loadError instanceof Error ? loadError.message : "加载告警记录失败")
-      })
-
-    return () => {
-      active = false
-    }
+    void load()
   }, [filters])
-
-  const instanceOptions = useMemo(() => {
-    const seen = new Set<string>()
-    const options: Array<{ instanceId: string; label: string; hint: string; count: number }> = []
-
-    alerts.forEach((alert) => {
-      if (!alert.instance_id || seen.has(alert.instance_id)) return
-      seen.add(alert.instance_id)
-
-      const related = alerts.filter((item) => item.instance_id === alert.instance_id)
-      options.push({
-        instanceId: alert.instance_id,
-        label: formatDisplayName(alert.account_name, alert.account_id),
-        hint: alert.page_type || alert.instance_id,
-        count: related.length,
-      })
-    })
-
-    return options
-  }, [alerts])
-
-  const visibleAlerts = useMemo(() => {
-    const activeInstanceId =
-      selectedInstanceId && instanceOptions.some((item) => item.instanceId === selectedInstanceId)
-        ? selectedInstanceId
-        : (instanceOptions[0]?.instanceId ?? "")
-
-    if (!activeInstanceId) return alerts
-    return alerts.filter((item) => item.instance_id === activeInstanceId)
-  }, [alerts, instanceOptions, selectedInstanceId])
 
   const stats = useMemo(() => {
     const sent = alerts.filter((item) => item.send_status === "sent").length
@@ -97,20 +62,13 @@ export function AlertsPage() {
     return { sent, failed, skipped }
   }, [alerts])
 
-  const activeInstanceId =
-    selectedInstanceId && instanceOptions.some((item) => item.instanceId === selectedInstanceId)
-      ? selectedInstanceId
-      : (instanceOptions[0]?.instanceId ?? "")
-
-  const selectedInstance = instanceOptions.find((item) => item.instanceId === activeInstanceId) ?? null
-
   return (
     <div className="space-y-6">
       <Card className="soft-panel">
         <CardHeader className="gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <CardTitle>筛选条件</CardTitle>
-            <CardDescription>按账户关键词、发送状态、告警类型和日期范围筛选历史告警。</CardDescription>
+            <CardDescription>按账户、告警状态、策略、模板、指标和日期范围筛选历史告警。</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => setFilters({ ...defaultFilters })}>
@@ -127,11 +85,11 @@ export function AlertsPage() {
             </a>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <Input
             value={filters.accountKeyword}
             onChange={(event) => setFilters((current) => ({ ...current, accountKeyword: event.target.value }))}
-            placeholder="账户名、账户 ID 或实例 ID"
+            placeholder="账户名称、账户 ID 或实例 ID"
           />
           <Select
             value={filters.sendStatus || "all"}
@@ -152,8 +110,53 @@ export function AlertsPage() {
           <Input
             value={filters.alertKind}
             onChange={(event) => setFilters((current) => ({ ...current, alertKind: event.target.value }))}
-            placeholder="例如：threshold / offline"
+            placeholder="例如 threshold / strategy:1"
           />
+          <Select
+            value={filters.strategyId || "all"}
+            onValueChange={(value) => setFilters((current) => ({ ...current, strategyId: value === "all" ? "" : String(value ?? "") }))}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="策略" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部策略</SelectItem>
+              {strategies.map((strategy) => (
+                <SelectItem key={strategy.id} value={String(strategy.id)}>
+                  {strategy.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={filters.templateType || "all"}
+            onValueChange={(value) =>
+              setFilters((current) => ({ ...current, templateType: value === "all" ? "" : String(value ?? "") }))
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="模板" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部模板</SelectItem>
+              <SelectItem value="window_threshold">窗口阈值</SelectItem>
+              <SelectItem value="historical_baseline">历史基线</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={filters.targetMetric || "all"}
+            onValueChange={(value) =>
+              setFilters((current) => ({ ...current, targetMetric: value === "all" ? "" : String(value ?? "") }))
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="指标" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部指标</SelectItem>
+              <SelectItem value="spend">花费</SelectItem>
+            </SelectContent>
+          </Select>
           <Input
             type="date"
             value={filters.dateFrom}
@@ -169,37 +172,24 @@ export function AlertsPage() {
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard title="当前结果" value={String(alerts.length)} hint="筛选后的告警记录总数" />
-        <StatCard title="已发送" value={String(stats.sent)} hint="成功投递的告警记录" />
-        <StatCard title="发送失败" value={String(stats.failed)} hint="需要重点排查的投递失败记录" />
-        <StatCard title="已跳过" value={String(stats.skipped)} hint="被规则或冷却策略跳过的记录" />
+        <StatCard title="已发送" value={String(stats.sent)} hint="成功投递的告警" />
+        <StatCard title="发送失败" value={String(stats.failed)} hint="需要重点排查的失败记录" />
+        <StatCard title="已跳过" value={String(stats.skipped)} hint="因冷却或配置原因跳过的记录" />
       </section>
 
       <Card className="soft-panel">
-        <CardHeader className="gap-3">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <CardTitle>告警历史</CardTitle>
-              <CardDescription>
-                默认展示今天的全部告警，并自动定位到第一个实例。下方可快速切换实例视角。
-              </CardDescription>
-            </div>
-            {selectedInstance ? (
-              <div className="rounded-2xl bg-muted/65 px-4 py-3 text-right">
-                <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">当前实例</div>
-                <div className="mt-1 text-sm font-semibold text-foreground">{selectedInstance.label}</div>
-                <div className="mt-1 text-xs text-muted-foreground">{selectedInstance.count} 条记录</div>
-              </div>
-            ) : null}
-          </div>
+        <CardHeader>
+          <CardTitle>告警历史</CardTitle>
+          <CardDescription>所有策略告警和系统告警都在这里回看，并保留策略来源链路。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? <div className="text-sm text-rose-600 dark:text-rose-300">{error}</div> : null}
 
           <div className="space-y-3 md:hidden">
-            {visibleAlerts.map((alert) => (
+            {alerts.map((alert) => (
               <AlertHistoryCard key={alert.id} alert={alert} />
             ))}
-            {visibleAlerts.length === 0 ? (
+            {alerts.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border/80 px-4 py-10 text-center text-sm text-muted-foreground">
                 当前筛选条件下没有告警记录。
               </div>
@@ -212,35 +202,38 @@ export function AlertsPage() {
                 <TableRow>
                   <TableHead>告警</TableHead>
                   <TableHead>账户</TableHead>
+                  <TableHead>策略</TableHead>
+                  <TableHead>模板 / 指标</TableHead>
+                  <TableHead>状态</TableHead>
                   <TableHead>级别</TableHead>
-                  <TableHead>发送状态</TableHead>
-                  <TableHead>类型</TableHead>
                   <TableHead>触发时间</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {visibleAlerts.map((alert) => (
+                {alerts.map((alert) => (
                   <TableRow key={alert.id}>
                     <TableCell className="whitespace-normal">
                       <div className="font-medium">{alert.title}</div>
                       <div className="mt-1 text-sm text-muted-foreground">{compactText(alert.content_preview, 120)}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">{formatAlertKind(alert.alert_kind)}</div>
                     </TableCell>
+                    <TableCell className="whitespace-normal">{formatAccountIdentity(alert.account_name, alert.account_id)}</TableCell>
+                    <TableCell className="whitespace-normal">{alert.strategy_name || "系统告警"}</TableCell>
                     <TableCell className="whitespace-normal">
-                      {formatAccountIdentity(alert.account_name, alert.account_id)}
-                    </TableCell>
-                    <TableCell>
-                      <AlertSeverityBadge severity={alert.severity} />
+                      {alert.template_type ? formatStrategyTemplate(alert.template_type) : "-"} / {formatMetricKey(alert.target_metric)}
                     </TableCell>
                     <TableCell>
                       <AlertStatusBadge status={alert.send_status} />
                     </TableCell>
-                    <TableCell>{formatAlertKind(alert.alert_kind)}</TableCell>
+                    <TableCell>
+                      <AlertSeverityBadge severity={alert.severity} />
+                    </TableCell>
                     <TableCell>{formatDateTime(alert.triggered_at)}</TableCell>
                   </TableRow>
                 ))}
-                {visibleAlerts.length === 0 ? (
+                {alerts.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="whitespace-normal py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={7} className="whitespace-normal py-10 text-center text-muted-foreground">
                       当前筛选条件下没有告警记录。
                     </TableCell>
                   </TableRow>
@@ -248,32 +241,6 @@ export function AlertsPage() {
               </TableBody>
             </Table>
           </div>
-
-          {instanceOptions.length > 0 ? (
-            <div className="instance-switcher">
-              {instanceOptions.map((item) => {
-                const active = item.instanceId === activeInstanceId
-                return (
-                  <button
-                    key={item.instanceId}
-                    type="button"
-                    onClick={() => setSelectedInstanceId(item.instanceId)}
-                    className={cn(
-                      "rounded-full border px-4 py-2 text-left transition-colors",
-                      active
-                        ? "border-primary/30 bg-primary text-primary-foreground shadow-[0_8px_24px_rgba(13,148,136,0.22)]"
-                        : "border-border/70 bg-background/90 text-foreground hover:bg-muted/70",
-                    )}
-                  >
-                    <span className="block text-sm font-medium">{item.label}</span>
-                    <span className={cn("block text-xs", active ? "text-primary-foreground/80" : "text-muted-foreground")}>
-                      {item.hint} · {item.count} 条
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-          ) : null}
         </CardContent>
       </Card>
     </div>
@@ -302,7 +269,10 @@ function AlertHistoryCard({ alert }: { alert: AdminAlertRecord }) {
       </div>
       <div className="mt-2 text-sm text-muted-foreground">{formatAccountIdentity(alert.account_name, alert.account_id)}</div>
       <div className="mt-1 text-sm text-muted-foreground">
-        {formatAlertKind(alert.alert_kind)} / {formatDateTime(alert.triggered_at)}
+        {alert.strategy_name || "系统告警"} / {formatDateTime(alert.triggered_at)}
+      </div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        {alert.template_type ? formatStrategyTemplate(alert.template_type) : "-"} / {formatMetricKey(alert.target_metric)}
       </div>
       <div className="mt-2 text-sm leading-6 text-foreground">{compactText(alert.content_preview, 160)}</div>
     </div>

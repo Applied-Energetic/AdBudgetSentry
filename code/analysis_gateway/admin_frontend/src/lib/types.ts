@@ -58,6 +58,78 @@ export interface AdminAlertRecord {
   provider_response: string | null
   severity: string | null
   anomaly_type: string | null
+  strategy_id: number | null
+  strategy_hit_id: number | null
+  capture_event_id: number | null
+  strategy_name: string | null
+  target_metric: string | null
+  template_type: string | null
+  triggered_at: number
+  created_at: number
+}
+
+export interface MetricRegistryItem {
+  metric_key: string
+  display_name: string
+  description: string | null
+  unit: string | null
+  is_enabled: boolean
+  is_strategy_ready: boolean
+}
+
+export interface StrategyDefinition {
+  id: number
+  name: string
+  description: string | null
+  template_type: "window_threshold" | "historical_baseline"
+  target_metric: string
+  params: Record<string, unknown>
+  enabled: boolean
+  is_default: boolean
+  auto_bind_new_instances: boolean
+  binding_count: number
+  hit_count: number
+  created_at: number | null
+  updated_at: number | null
+}
+
+export interface InstanceStrategyBinding {
+  id: number
+  instance_id: string
+  strategy_id: number
+  enabled: boolean
+  priority: number
+  strategy_name: string
+  description: string | null
+  template_type: "window_threshold" | "historical_baseline"
+  target_metric: string
+  params: Record<string, unknown>
+  created_at: number | null
+  updated_at: number | null
+}
+
+export interface AdminInstanceStrategyRecord extends InstanceStrategyBinding {
+  instance_label: string
+  account_name: string | null
+  account_id: string | null
+  hit_count: number
+}
+
+export interface StrategyHit {
+  id: number
+  instance_id: string
+  strategy_id: number
+  binding_id: number | null
+  capture_event_id: number | null
+  target_metric: string
+  strategy_name: string
+  template_type: "window_threshold" | "historical_baseline"
+  severity: string
+  score: number
+  anomaly_type: string
+  evidence: string[]
+  snapshot: Record<string, unknown>
+  recommendation: string | null
   triggered_at: number
   created_at: number
 }
@@ -101,6 +173,8 @@ export interface AdminInstanceDetail extends AdminInstanceSummary {
   recent_alerts: AdminAlertRecord[]
   recent_analyses: AdminAnalysisRecord[]
   capture_history: AdminCaptureHistoryPoint[]
+  strategy_bindings: InstanceStrategyBinding[]
+  recent_strategy_hits: StrategyHit[]
 }
 
 export interface DashboardPayload {
@@ -158,6 +232,9 @@ export interface AlertsFilters {
   accountKeyword: string
   sendStatus: "" | AlertSendStatus
   alertKind: string
+  strategyId: string
+  templateType: string
+  targetMetric: string
   dateFrom: string
   dateTo: string
 }

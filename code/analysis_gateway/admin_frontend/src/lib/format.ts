@@ -137,6 +137,9 @@ export function getCaptureStatusLabel(value: string | null | undefined) {
 
 export function formatAlertKind(value: string | null | undefined) {
   const raw = (value || "").toLowerCase()
+  if (raw.startsWith("strategy:")) {
+    return "策略告警"
+  }
   return (
     {
       threshold: "阈值告警",
@@ -146,6 +149,36 @@ export function formatAlertKind(value: string | null | undefined) {
       analysis: "分析告警",
       spend_jump: "消耗突增",
       spend_drop: "消耗骤降",
+    }[raw] || value || "-"
+  )
+}
+
+export function formatStrategyTemplate(value: string | null | undefined) {
+  const raw = (value || "").toLowerCase()
+  return (
+    {
+      window_threshold: "窗口阈值",
+      historical_baseline: "历史基线",
+    }[raw] || value || "-"
+  )
+}
+
+export function formatMetricKey(value: string | null | undefined) {
+  const raw = (value || "").toLowerCase()
+  return (
+    {
+      spend: "花费",
+      impressions: "曝光次数",
+      clicks: "点击次数",
+      ctr: "点击率",
+      accelerated_spend: "加速探索花费",
+      creative_boost_spend: "素材追投花费",
+      video_3s: "视频3秒播放次数",
+      video_5s: "视频5秒播放次数",
+      video_complete: "视频完播次数",
+      yellow_cart_clicks: "小黄车点击次数",
+      product_card_clicks: "商品卡点击次数",
+      merchant_coupon_penetration: "超级商家券订单渗透",
     }[raw] || value || "-"
   )
 }

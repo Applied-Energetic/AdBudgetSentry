@@ -17,13 +17,21 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
     title: "告警中心",
     subtitle: "筛选、回看并导出历史告警记录。",
   },
+  "/admin/strategies": {
+    title: "策略中心",
+    subtitle: "管理内置策略模板、默认绑定和实例策略覆盖。",
+  },
+  "/admin/settings": {
+    title: "系统设置",
+    subtitle: "维护 PushPlus、模型服务和默认后端配置。",
+  },
 }
 
 function getPageMeta(pathname: string) {
   if (pathname.startsWith("/admin/instances/")) {
     return {
       title: "实例详情",
-      subtitle: "查看单个实例的采样趋势、分析记录、告警和错误信息。",
+      subtitle: "查看采样趋势、策略绑定、命中记录和告警链路。",
     }
   }
 
@@ -65,7 +73,7 @@ export function AdminShell() {
             <div className="order-3 w-full xl:order-none xl:flex xl:flex-1 xl:items-center xl:justify-center">
               <div className="relative hidden w-full max-w-md xl:block">
                 <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input className="toolbar-search pl-9" placeholder="搜索实例、账户或告警标题" />
+                <Input className="toolbar-search pl-9" placeholder="搜索实例、账户或策略名称" />
               </div>
             </div>
 
@@ -76,8 +84,8 @@ export function AdminShell() {
                 运维
               </div>
               <div className="text-sm">
-                <div className="font-medium text-foreground">管理员</div>
-                <div className="text-xs text-muted-foreground">监控工作台</div>
+                <div className="font-medium text-foreground">管理台</div>
+                <div className="text-xs text-muted-foreground">AdBudgetSentry</div>
               </div>
             </div>
 
@@ -93,7 +101,7 @@ export function AdminShell() {
 
         <footer className="px-4 pb-6 pt-1 sm:px-6 lg:px-8">
           <div className="border-t border-border/70 pt-4 text-xs text-muted-foreground">
-            当前为第一版分离式管理后台，仍复用现有 FastAPI 监控接口。
+            当前为分离式管理后台，策略配置、实例绑定和系统告警共用同一套 FastAPI 数据源。
           </div>
         </footer>
       </div>
