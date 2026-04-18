@@ -92,6 +92,55 @@ class StrategyAdminApiTests(unittest.TestCase):
 
             self.assertTrue(any(item["strategy_id"] == strategy_id for item in detail["strategy_bindings"]))
 
+    def test_instance_strategy_center_returns_one_strategy_per_instance(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db_path = Path(tmp) / "app.db"
+            ensure_database(db_path)
+
+            save_ingest_event(
+                db_path,
+                {
+                    "instance_id": "inst-a",
+                    "account_id": "acct-a",
+                    "account_name": "Shop A",
+                    "page_type": "financial",
+                    "page_url": "https://example.test/a",
+                    "script_version": "1.0.0",
+                    "captured_at": 1_712_000_000_000,
+                    "row_count": 3,
+                    "metrics": {"current_spend": 100.0},
+                    "raw_context": {},
+                },
+            )
+            save_ingest_event(
+                db_path,
+                {
+                    "instance_id": "inst-b",
+                    "account_id": "acct-b",
+                    "account_name": "Shop B",
+                    "page_type": "financial",
+                    "page_url": "https://example.test/b",
+                    "script_version": "1.0.0",
+                    "captured_at": 1_712_000_060_000,
+                    "row_count": 3,
+                    "metrics": {"current_spend": 120.0},
+                    "raw_context": {},
+                },
+            )
+
+            with patch.object(gateway_app, "get_db_path", return_value=db_path):
+                with TestClient(gateway_app.app) as client:
+                    response = client.get("/admin/api/instance-strategies")
+
+            self.assertEqual(response.status_code, 200)
+            body = response.json()
+            self.assertGreaterEqual(len(body), 2)
+            instance_ids = {item["instance_id"] for item in body}
+            self.assertIn("inst-a", instance_ids)
+            self.assertIn("inst-b", instance_ids)
+            strategy_ids = [item["strategy_id"] for item in body if item["strategy_name"]]
+            self.assertEqual(len(strategy_ids), len(set(strategy_ids)))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -324,6 +324,13 @@ class InstanceStrategyBindingResponse(BaseModel):
     updated_at: int | None = None
 
 
+class AdminInstanceStrategyRecord(InstanceStrategyBindingResponse):
+    instance_label: str
+    account_name: str | None = None
+    account_id: str | None = None
+    hit_count: int = 0
+
+
 class StrategyHitResponse(BaseModel):
     id: int
     instance_id: str

@@ -24,6 +24,7 @@ from database import (
     delete_strategy_definition,
     ensure_database,
     fetch_admin_alerts,
+    fetch_admin_instance_strategies,
     fetch_admin_instances,
     fetch_admin_strategies,
     fetch_active_instance_strategy_bindings,
@@ -53,6 +54,7 @@ from models import (
     AdminAlertRecord,
     AdminCaptureHistoryPoint,
     AdminInstanceDetail,
+    AdminInstanceStrategyRecord,
     AdminInstanceSummary,
     AdminSystemSettings,
     AdminSummary,
@@ -1305,6 +1307,11 @@ def admin_strategies_api() -> list[StrategyDefinitionResponse]:
     return [StrategyDefinitionResponse(**item) for item in fetch_admin_strategies(get_db_path())]
 
 
+@app.get("/admin/api/instance-strategies", response_model=list[AdminInstanceStrategyRecord])
+def admin_instance_strategies_api() -> list[AdminInstanceStrategyRecord]:
+    return [AdminInstanceStrategyRecord(**item) for item in fetch_admin_instance_strategies(get_db_path())]
+
+
 @app.post("/admin/api/strategies", response_model=StrategyDefinitionResponse)
 def admin_create_strategy(request: CreateStrategyDefinitionRequest) -> StrategyDefinitionResponse:
     created = create_strategy_definition(
@@ -1685,6 +1692,14 @@ def admin_settings_page() -> HTMLResponse:
     </html>
     """
     return HTMLResponse(body)
+
+
+@app.get("/admin/strategies", response_class=HTMLResponse)
+def admin_strategies_page() -> HTMLResponse:
+    spa_response = render_admin_frontend_index()
+    if spa_response is not None:
+        return spa_response
+    return HTMLResponse("<!doctype html><html><body><a href='/admin'>Back to admin</a></body></html>")
 
 
 @app.get("/admin/instances/{instance_id}", response_class=HTMLResponse)

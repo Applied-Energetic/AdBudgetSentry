@@ -243,8 +243,113 @@ def _seed_default_strategies(conn: sqlite3.Connection) -> None:
         )
 
 
+def _instance_label_for_strategy(conn: sqlite3.Connection, instance_id: str) -> str:
+    row = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(alias, ''), NULLIF(account_name, ''), NULLIF(account_id, ''), instance_id) AS label
+        FROM script_instances
+        WHERE instance_id = ?
+        """,
+        (instance_id,),
+    ).fetchone()
+    return str(row["label"]) if row and row["label"] else instance_id
+
+
+def _create_instance_scoped_strategy_copy(
+    conn: sqlite3.Connection,
+    *,
+    source_strategy_id: int,
+    instance_id: str,
+) -> int:
+    source = conn.execute(
+        """
+        SELECT name, description, template_type, target_metric, params_json, enabled
+        FROM strategy_definitions
+        WHERE id = ?
+        """,
+        (source_strategy_id,),
+    ).fetchone()
+    if not source:
+        raise ValueError(f"Strategy not found: {source_strategy_id}")
+
+    now_ms = utc_now_ms()
+    label = _instance_label_for_strategy(conn, instance_id)
+    base_name = f"{label} - {source['name']}"
+    name = base_name
+    suffix = 2
+    while conn.execute("SELECT 1 FROM strategy_definitions WHERE name = ?", (name,)).fetchone():
+        name = f"{base_name} #{suffix}"
+        suffix += 1
+
+    cursor = conn.execute(
+        """
+        INSERT INTO strategy_definitions (
+            name, description, template_type, target_metric, params_json,
+            enabled, is_default, auto_bind_new_instances, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+        """,
+        (
+            name,
+            source["description"],
+            source["template_type"],
+            source["target_metric"],
+            source["params_json"],
+            source["enabled"],
+            now_ms,
+            now_ms,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def _normalize_instance_scoped_strategies(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT
+            b.id AS binding_id,
+            b.instance_id,
+            b.strategy_id,
+            s.is_default,
+            s.auto_bind_new_instances,
+            counts.binding_count
+        FROM instance_strategy_bindings b
+        JOIN strategy_definitions s ON s.id = b.strategy_id
+        JOIN (
+            SELECT strategy_id, COUNT(*) AS binding_count
+            FROM instance_strategy_bindings
+            GROUP BY strategy_id
+        ) counts ON counts.strategy_id = b.strategy_id
+        ORDER BY b.id ASC
+        """
+    ).fetchall()
+
+    for row in rows:
+        needs_split = bool(row["is_default"]) or bool(row["auto_bind_new_instances"]) or int(row["binding_count"]) > 1
+        if not needs_split:
+            continue
+        new_strategy_id = _create_instance_scoped_strategy_copy(
+            conn,
+            source_strategy_id=int(row["strategy_id"]),
+            instance_id=str(row["instance_id"]),
+        )
+        conn.execute(
+            """
+            UPDATE instance_strategy_bindings
+            SET strategy_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_strategy_id, utc_now_ms(), row["binding_id"]),
+        )
+
+
 def _bind_default_strategies(conn: sqlite3.Connection, instance_id: str) -> None:
     now_ms = utc_now_ms()
+    existing = conn.execute(
+        "SELECT 1 FROM instance_strategy_bindings WHERE instance_id = ? LIMIT 1",
+        (instance_id,),
+    ).fetchone()
+    if existing:
+        return
     strategy_rows = conn.execute(
         """
         SELECT id
@@ -253,6 +358,11 @@ def _bind_default_strategies(conn: sqlite3.Connection, instance_id: str) -> None
         """
     ).fetchall()
     for row in strategy_rows:
+        copied_strategy_id = _create_instance_scoped_strategy_copy(
+            conn,
+            source_strategy_id=int(row["id"]),
+            instance_id=instance_id,
+        )
         conn.execute(
             """
             INSERT INTO instance_strategy_bindings (
@@ -260,13 +370,14 @@ def _bind_default_strategies(conn: sqlite3.Connection, instance_id: str) -> None
             ) VALUES (?, ?, 1, 100, ?, ?)
             ON CONFLICT(instance_id, strategy_id) DO NOTHING
             """,
-            (instance_id, row["id"], now_ms, now_ms),
+            (instance_id, copied_strategy_id, now_ms, now_ms),
         )
 
 
 def ensure_database(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
         conn.executescript(
             """
             PRAGMA journal_mode=WAL;
@@ -473,6 +584,7 @@ def ensure_database(db_path: Path) -> None:
         _ensure_column(conn, "alert_records", "target_metric", "TEXT")
         _seed_metric_registry(conn)
         _seed_default_strategies(conn)
+        _normalize_instance_scoped_strategies(conn)
 
 
 def open_connection(db_path: Path) -> sqlite3.Connection:
@@ -1005,6 +1117,47 @@ def fetch_admin_strategies(db_path: Path) -> list[dict]:
     return items
 
 
+def fetch_admin_instance_strategies(db_path: Path) -> list[dict]:
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                b.id,
+                b.instance_id,
+                b.strategy_id,
+                b.enabled,
+                b.priority,
+                b.created_at,
+                b.updated_at,
+                s.name AS strategy_name,
+                s.description,
+                s.template_type,
+                s.target_metric,
+                s.params_json,
+                COALESCE(NULLIF(i.alias, ''), NULLIF(i.account_name, ''), NULLIF(i.account_id, ''), b.instance_id) AS instance_label,
+                i.account_name,
+                i.account_id,
+                COUNT(h.id) AS hit_count
+            FROM instance_strategy_bindings b
+            JOIN strategy_definitions s ON s.id = b.strategy_id
+            LEFT JOIN script_instances i ON i.instance_id = b.instance_id
+            LEFT JOIN strategy_hits h ON h.strategy_id = b.strategy_id AND h.instance_id = b.instance_id
+            GROUP BY
+                b.id, b.instance_id, b.strategy_id, b.enabled, b.priority, b.created_at, b.updated_at,
+                s.name, s.description, s.template_type, s.target_metric, s.params_json,
+                i.alias, i.account_name, i.account_id
+            ORDER BY COALESCE(i.alias, i.account_name, i.account_id, b.instance_id) ASC, b.updated_at DESC, b.id DESC
+            """
+        ).fetchall()
+    items: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        item["enabled"] = bool(item["enabled"])
+        item["params"] = json.loads(item.pop("params_json") or "{}")
+        items.append(item)
+    return items
+
+
 def create_strategy_definition(
     db_path: Path,
     *,
@@ -1111,6 +1264,33 @@ def save_instance_strategy_binding(
 ) -> dict:
     now_ms = utc_now_ms()
     with open_connection(db_path) as conn:
+        strategy_row = conn.execute(
+            """
+            SELECT is_default, auto_bind_new_instances
+            FROM strategy_definitions
+            WHERE id = ?
+            """,
+            (strategy_id,),
+        ).fetchone()
+        existing_binding = conn.execute(
+            """
+            SELECT instance_id
+            FROM instance_strategy_bindings
+            WHERE strategy_id = ?
+            LIMIT 1
+            """,
+            (strategy_id,),
+        ).fetchone()
+        effective_strategy_id = strategy_id
+        needs_copy = bool(strategy_row and (strategy_row["is_default"] or strategy_row["auto_bind_new_instances"]))
+        if existing_binding and existing_binding["instance_id"] != instance_id:
+            needs_copy = True
+        if needs_copy:
+            effective_strategy_id = _create_instance_scoped_strategy_copy(
+                conn,
+                source_strategy_id=strategy_id,
+                instance_id=instance_id,
+            )
         conn.execute(
             """
             INSERT INTO instance_strategy_bindings (
@@ -1121,10 +1301,10 @@ def save_instance_strategy_binding(
                 priority = excluded.priority,
                 updated_at = excluded.updated_at
             """,
-            (instance_id, strategy_id, 1 if enabled else 0, priority, now_ms, now_ms),
+            (instance_id, effective_strategy_id, 1 if enabled else 0, priority, now_ms, now_ms),
         )
     bindings = fetch_instance_strategy_bindings(db_path, instance_id)
-    return next(item for item in bindings if item["strategy_id"] == strategy_id)
+    return next(item for item in bindings if item["strategy_id"] == effective_strategy_id)
 
 
 def delete_instance_strategy_binding(db_path: Path, instance_id: str, strategy_id: int) -> bool:

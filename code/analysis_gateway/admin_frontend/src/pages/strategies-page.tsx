@@ -7,17 +7,16 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { adminApi } from "@/lib/api"
-import { formatDateTime, formatMetricKey, formatStrategyTemplate } from "@/lib/format"
-import type { MetricRegistryItem, StrategyDefinition } from "@/lib/types"
+import { formatAccountIdentity, formatDateTime, formatMetricKey, formatStrategyTemplate } from "@/lib/format"
+import type { AdminInstanceStrategyRecord, AdminInstanceSummary, MetricRegistryItem } from "@/lib/types"
 
 type StrategyFormState = {
+  instanceId: string
   name: string
   description: string
   template_type: "window_threshold" | "historical_baseline"
   target_metric: string
   enabled: boolean
-  is_default: boolean
-  auto_bind_new_instances: boolean
   window_minutes: string
   threshold_value: string
   zscore_threshold: string
@@ -27,13 +26,12 @@ type StrategyFormState = {
 }
 
 const emptyForm: StrategyFormState = {
+  instanceId: "",
   name: "",
   description: "",
   template_type: "window_threshold",
   target_metric: "spend",
   enabled: true,
-  is_default: false,
-  auto_bind_new_instances: false,
   window_minutes: "10",
   threshold_value: "20",
   zscore_threshold: "2.5",
@@ -67,23 +65,22 @@ function buildPayload(form: StrategyFormState) {
     template_type: form.template_type,
     target_metric: form.target_metric,
     enabled: form.enabled,
-    is_default: form.is_default,
-    auto_bind_new_instances: form.auto_bind_new_instances,
+    is_default: false,
+    auto_bind_new_instances: false,
     params,
   }
 }
 
-function buildForm(strategy: StrategyDefinition | null): StrategyFormState {
-  if (!strategy) return emptyForm
-  const params = strategy.params || {}
+function buildForm(record: AdminInstanceStrategyRecord | null): StrategyFormState {
+  if (!record) return emptyForm
+  const params = record.params || {}
   return {
-    name: strategy.name,
-    description: strategy.description || "",
-    template_type: strategy.template_type,
-    target_metric: strategy.target_metric,
-    enabled: strategy.enabled,
-    is_default: strategy.is_default,
-    auto_bind_new_instances: strategy.auto_bind_new_instances,
+    instanceId: record.instance_id,
+    name: record.strategy_name,
+    description: record.description || "",
+    template_type: record.template_type,
+    target_metric: record.target_metric,
+    enabled: record.enabled,
     window_minutes: String(params.window_minutes ?? 10),
     threshold_value: String(params.threshold_value ?? 20),
     zscore_threshold: String(params.zscore_threshold ?? 2.5),
@@ -94,13 +91,14 @@ function buildForm(strategy: StrategyDefinition | null): StrategyFormState {
 }
 
 export function StrategiesPage() {
-  const [strategies, setStrategies] = useState<StrategyDefinition[]>([])
+  const [records, setRecords] = useState<AdminInstanceStrategyRecord[]>([])
+  const [instances, setInstances] = useState<AdminInstanceSummary[]>([])
   const [metrics, setMetrics] = useState<MetricRegistryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
-  const [editing, setEditing] = useState<StrategyDefinition | null>(null)
+  const [editing, setEditing] = useState<AdminInstanceStrategyRecord | null>(null)
   const [form, setForm] = useState<StrategyFormState>(emptyForm)
 
   const strategyReadyMetrics = useMemo(
@@ -108,15 +106,42 @@ export function StrategiesPage() {
     [metrics],
   )
 
+  const recordsByInstance = useMemo(() => {
+    const grouped = new Map<string, { label: string; accountLine: string; records: AdminInstanceStrategyRecord[] }>()
+    for (const record of records) {
+      const existing = grouped.get(record.instance_id)
+      const accountLine = formatAccountIdentity(record.account_name, record.account_id)
+      if (existing) {
+        existing.records.push(record)
+        continue
+      }
+      grouped.set(record.instance_id, {
+        label: record.instance_label,
+        accountLine,
+        records: [record],
+      })
+    }
+    return Array.from(grouped.entries()).map(([instanceId, value]) => ({
+      instanceId,
+      ...value,
+      records: value.records.sort((a, b) => a.strategy_name.localeCompare(b.strategy_name, "zh-CN")),
+    }))
+  }, [records])
+
   const load = async () => {
     try {
       setLoading(true)
       setError(null)
-      const [strategyData, metricData] = await Promise.all([adminApi.getStrategies(), adminApi.getMetrics()])
-      setStrategies(strategyData)
+      const [recordData, instanceData, metricData] = await Promise.all([
+        adminApi.getInstanceStrategies(),
+        adminApi.getInstances(),
+        adminApi.getMetrics(),
+      ])
+      setRecords(recordData)
+      setInstances(instanceData)
       setMetrics(metricData)
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "加载策略失败")
+      setError(loadError instanceof Error ? loadError.message : "加载实例策略失败")
     } finally {
       setLoading(false)
     }
@@ -132,42 +157,52 @@ export function StrategiesPage() {
       setError(null)
       const payload = buildPayload(form)
       if (editing) {
-        await adminApi.updateStrategy(editing.id, payload)
-        setStatus("策略已更新。")
+        await adminApi.updateStrategy(editing.strategy_id, payload)
+        await adminApi.saveInstanceStrategyBinding(editing.instance_id, {
+          strategy_id: editing.strategy_id,
+          enabled: form.enabled,
+          priority: editing.priority,
+        })
+        setStatus("实例策略已更新。")
       } else {
-        await adminApi.createStrategy(payload)
-        setStatus("策略已创建。")
+        const created = await adminApi.createStrategy(payload)
+        await adminApi.saveInstanceStrategyBinding(form.instanceId, {
+          strategy_id: created.id,
+          enabled: form.enabled,
+          priority: 100,
+        })
+        setStatus("实例策略已创建。")
       }
       setEditing(null)
       setForm(emptyForm)
       await load()
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "保存策略失败")
+      setError(saveError instanceof Error ? saveError.message : "保存实例策略失败")
     } finally {
       setSaving(false)
     }
   }
 
-  const remove = async (strategy: StrategyDefinition) => {
-    if (!window.confirm(`删除策略“${strategy.name}”后不会移除历史告警，是否继续？`)) return
+  const remove = async (record: AdminInstanceStrategyRecord) => {
+    if (!window.confirm(`删除实例策略“${record.strategy_name}”后不会移除历史告警，是否继续？`)) return
 
     try {
       setError(null)
-      await adminApi.deleteStrategy(strategy.id)
-      if (editing?.id === strategy.id) {
+      await adminApi.deleteStrategy(record.strategy_id)
+      if (editing?.strategy_id === record.strategy_id) {
         setEditing(null)
         setForm(emptyForm)
       }
-      setStatus("策略已删除。")
+      setStatus("实例策略已删除。")
       await load()
     } catch (removeError) {
-      setError(removeError instanceof Error ? removeError.message : "删除策略失败")
+      setError(removeError instanceof Error ? removeError.message : "删除实例策略失败")
     }
   }
 
-  const startEdit = (strategy: StrategyDefinition) => {
-    setEditing(strategy)
-    setForm(buildForm(strategy))
+  const startEdit = (record: AdminInstanceStrategyRecord) => {
+    setEditing(record)
+    setForm(buildForm(record))
     setStatus(null)
     setError(null)
   }
@@ -180,7 +215,7 @@ export function StrategiesPage() {
   }
 
   if (loading) {
-    return <div className="page-subheading">正在加载策略中心...</div>
+    return <div className="page-subheading">正在加载实例策略...</div>
   }
 
   return (
@@ -188,7 +223,7 @@ export function StrategiesPage() {
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <h1 className="page-heading">策略中心</h1>
-          <p className="page-subheading">以实例为核心管理花费策略。当前仅 `花费` 指标可执行，其他指标保留为后续扩展入口。</p>
+          <p className="page-subheading">每条策略只对应一个实例。修改时不会影响其他实例，便于单独维护参数。</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button variant="outline" onClick={() => void load()}>
@@ -197,7 +232,7 @@ export function StrategiesPage() {
           </Button>
           <Button onClick={startCreate}>
             <Plus className="size-4" />
-            新建策略
+            新建实例策略
           </Button>
         </div>
       </div>
@@ -208,51 +243,87 @@ export function StrategiesPage() {
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
         <Card className="soft-panel">
           <CardHeader>
-            <CardTitle>已配置策略</CardTitle>
-            <CardDescription>查看策略模板、绑定规模、命中次数和默认自动绑定状态。</CardDescription>
+            <CardTitle>实例策略视图</CardTitle>
+            <CardDescription>每个实例一张卡片，只显示它自己的策略。这样修改时不会误伤其他实例。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {strategies.map((strategy) => (
-              <div key={strategy.id} className="record-card">
-                <div className="flex flex-wrap items-start justify-between gap-3">
+            {recordsByInstance.map((group) => (
+              <div key={group.instanceId} className="rounded-3xl border border-border/70 bg-background/70 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold text-foreground">{strategy.name}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {formatStrategyTemplate(strategy.template_type)} / {formatMetricKey(strategy.target_metric)}
-                    </div>
+                    <div className="text-base font-semibold text-foreground">{group.label}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{group.accountLine}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">实例 ID：{group.instanceId}</div>
                   </div>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={() => startEdit(strategy)}>
-                      <PencilLine className="size-4" />
-                      编辑
-                    </Button>
-                    <Button variant="destructive" size="sm" onClick={() => void remove(strategy)}>
-                      <Trash2 className="size-4" />
-                      删除
-                    </Button>
+                  <div className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+                    策略数：{group.records.length}
                   </div>
                 </div>
-                <div className="mt-3 text-sm text-muted-foreground">{strategy.description || "暂无描述"}</div>
-                <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                  <div>绑定实例：{strategy.binding_count}</div>
-                  <div>命中次数：{strategy.hit_count}</div>
-                  <div>默认策略：{strategy.is_default ? "是" : "否"}</div>
-                  <div>自动绑定新实例：{strategy.auto_bind_new_instances ? "是" : "否"}</div>
-                  <div>启用状态：{strategy.enabled ? "启用" : "停用"}</div>
-                  <div>更新时间：{formatDateTime(strategy.updated_at)}</div>
+
+                <div className="mt-4 space-y-3">
+                  {group.records.map((record) => (
+                    <div key={record.id} className="record-card">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold text-foreground">{record.strategy_name}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {formatStrategyTemplate(record.template_type)} / {formatMetricKey(record.target_metric)}
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => startEdit(record)}>
+                            <PencilLine className="size-4" />
+                            编辑
+                          </Button>
+                          <Button variant="destructive" size="sm" onClick={() => void remove(record)}>
+                            <Trash2 className="size-4" />
+                            删除
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="mt-3 text-sm text-muted-foreground">{record.description || "暂无描述"}</div>
+                      <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                        <div>命中次数：{record.hit_count}</div>
+                        <div>启用状态：{record.enabled ? "启用" : "停用"}</div>
+                        <div>优先级：{record.priority}</div>
+                        <div>更新时间：{formatDateTime(record.updated_at)}</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}
-            {strategies.length === 0 ? <div className="text-sm text-muted-foreground">当前没有策略。</div> : null}
+            {recordsByInstance.length === 0 ? <div className="text-sm text-muted-foreground">当前没有实例策略。</div> : null}
           </CardContent>
         </Card>
 
         <Card className="soft-panel">
           <CardHeader>
-            <CardTitle>{editing ? "编辑策略" : "新建策略"}</CardTitle>
-            <CardDescription>阶段一仅支持内置模板，允许在后台维护参数和默认绑定行为。</CardDescription>
+            <CardTitle>{editing ? "编辑实例策略" : "新建实例策略"}</CardTitle>
+            <CardDescription>新建时必须选择实例，策略创建后只归属于该实例。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">目标实例</label>
+              <Select
+                value={form.instanceId || "none"}
+                onValueChange={(value) => setForm((current) => ({ ...current, instanceId: value === "none" ? "" : String(value) }))}
+                disabled={Boolean(editing)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="请选择实例" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">请选择实例</SelectItem>
+                  {instances.map((instance) => (
+                    <SelectItem key={instance.instance_id} value={instance.instance_id}>
+                      {instance.alias || instance.account_name || instance.account_id || instance.instance_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">策略名称</label>
               <Input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
@@ -311,19 +382,12 @@ export function StrategiesPage() {
                 value={form.enabled}
                 onChange={(value) => setForm((current) => ({ ...current, enabled: value }))}
               />
-              <LabeledBoolean
-                label="默认策略"
-                value={form.is_default}
-                onChange={(value) => setForm((current) => ({ ...current, is_default: value }))}
-              />
-              <LabeledBoolean
-                label="新实例自动绑定"
-                value={form.auto_bind_new_instances}
-                onChange={(value) => setForm((current) => ({ ...current, auto_bind_new_instances: value }))}
-              />
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">严重度</label>
-                <Select value={form.severity} onValueChange={(value) => setForm((current) => ({ ...current, severity: value as StrategyFormState["severity"] }))}>
+                <Select
+                  value={form.severity}
+                  onValueChange={(value) => setForm((current) => ({ ...current, severity: value as StrategyFormState["severity"] }))}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -370,8 +434,8 @@ export function StrategiesPage() {
             </div>
 
             <div className="flex gap-2">
-              <Button onClick={() => void save()} disabled={saving || !form.name.trim()}>
-                {saving ? "保存中..." : editing ? "保存修改" : "创建策略"}
+              <Button onClick={() => void save()} disabled={saving || !form.name.trim() || !form.instanceId}>
+                {saving ? "保存中..." : editing ? "保存修改" : "创建实例策略"}
               </Button>
               {editing ? (
                 <Button variant="outline" onClick={startCreate}>

@@ -4,6 +4,7 @@ import type {
   AdminCaptureHistoryPoint,
   AdminInstanceDetail,
   AdminInstanceSummary,
+  AdminInstanceStrategyRecord,
   InstanceChatResponse,
   InstanceStrategyBinding,
   AdminSystemSettings,
@@ -79,6 +80,10 @@ export const adminApi = {
 
   async getStrategies(): Promise<StrategyDefinition[]> {
     return fetchJson<StrategyDefinition[]>("/admin/api/strategies")
+  },
+
+  async getInstanceStrategies(): Promise<AdminInstanceStrategyRecord[]> {
+    return fetchJson<AdminInstanceStrategyRecord[]>("/admin/api/instance-strategies")
   },
 
   async createStrategy(payload: Omit<StrategyDefinition, "id" | "binding_count" | "hit_count" | "created_at" | "updated_at">) {

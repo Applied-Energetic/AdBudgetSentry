@@ -108,6 +108,13 @@ export interface InstanceStrategyBinding {
   updated_at: number | null
 }
 
+export interface AdminInstanceStrategyRecord extends InstanceStrategyBinding {
+  instance_label: string
+  account_name: string | null
+  account_id: string | null
+  hit_count: number
+}
+
 export interface StrategyHit {
   id: number
   instance_id: string
